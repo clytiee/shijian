@@ -15,7 +15,7 @@
     "128": "icon.png"
   },
   "web_accessible_resources": [{
-    "resources": ["libs/html2canvas.min.js"],
+    "resources": ["libs/html2canvas.min.js", "fontlist.js"],
     "matches": ["<all_urls>"]
   }]
 }

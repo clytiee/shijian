@@ -62,6 +62,44 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       });
     return true; // 保持消息通道开放，等待异步响应
   }
+
+  if (request.action === 'GET_LOCAL_FONTS') {
+    (async () => {
+      try {
+        const tabId = sender.tab && sender.tab.id;
+        if (!tabId) {
+          sendResponse({ success: false, fonts: [], error: 'no tab id' });
+          return;
+        }
+        const results = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: 'MAIN',
+          func: () => {
+            if (typeof window.queryLocalFonts !== 'function') {
+              return { supported: false, fonts: [], error: 'unsupported' };
+            }
+            return window.queryLocalFonts().then(faces => {
+              const set = new Set();
+              (faces || []).forEach(f => {
+                const name = f && (f.fullName || f.family);
+                if (name) set.add(name);
+              });
+              return { supported: true, fonts: Array.from(set).sort(), error: null };
+            }).catch(err => ({
+              supported: true,
+              fonts: [],
+              error: String((err && err.name) || err)
+            }));
+          }
+        });
+        const r = (results && results[0] && results[0].result) || {};
+        sendResponse({ success: true, supported: r.supported !== false, fonts: r.fonts || [], error: r.error });
+      } catch (e) {
+        sendResponse({ success: false, fonts: [], error: e.message });
+      }
+    })();
+    return true;
+  }
 });
 
 // 创建右键菜单
@@ -73,43 +111,26 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// 监听右键菜单点击
+// 监听右键菜单点击（切换智能模式）
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'toggle-smart-mode') {
-    chrome.storage.sync.get(['smartMode'], (result) => {
-      const newState = !result.smartMode;
-      chrome.storage.sync.set({ smartMode: newState });
-      
-      // 更新菜单标题显示状态
-      const menuTitle = newState ? '✓ 智能模式（已开启）' : '智能模式（已关闭）';
-      chrome.contextMenus.update('toggle-smart-mode', { title: menuTitle });
-      
-      // 向当前页面发送消息显示提示
-      chrome.tabs.sendMessage(tab.id, { 
-        action: 'SHOW_TOAST', 
-        message: newState ? '🧠 智能模式已开启' : '📝 手动模式'
-      }).catch(() => {
-        // 忽略错误（可能没有 content script）
-      });
-    });
-  }
-});
+  if (info.menuItemId !== 'toggle-smart-mode') return;
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === 'toggle-smart-mode') {
-    chrome.storage.sync.get(['smartMode'], (result) => {
-      const newState = !result.smartMode;
-      chrome.storage.sync.set({ smartMode: newState });
-      
-      // 更新菜单标题
-      const menuTitle = newState ? '✓ 智能模式（已开启）' : '智能模式（已关闭）';
-      chrome.contextMenus.update('toggle-smart-mode', { title: menuTitle });
-      
-      // 通知当前页面显示提示
-      chrome.tabs.sendMessage(tab.id, { 
-        action: 'SHOW_TOAST', 
-        message: newState ? '🧠 智能模式已开启（第1行→标题，第2行→作者）' : '📝 手动模式已开启'
-      }).catch(() => {});
+  chrome.storage.sync.get(['smartMode'], (result) => {
+    const newState = !result.smartMode;
+    chrome.storage.sync.set({ smartMode: newState });
+
+    // 更新菜单标题显示状态
+    const menuTitle = newState ? '✓ 智能模式（已开启）' : '智能模式（已关闭）';
+    chrome.contextMenus.update('toggle-smart-mode', { title: menuTitle });
+
+    // 向当前页面发送消息显示提示（与 content.js 内的模式说明保持一致）
+    chrome.tabs.sendMessage(tab.id, {
+      action: 'SHOW_TOAST',
+      message: newState
+        ? '🧠 智能模式已开启：第1行→标题，第2行→作者，其余→正文'
+        : '📝 手动模式已开启：先选中标题/作者，再点击要提取的 DIV'
+    }).catch(() => {
+      // 忽略错误（可能没有 content script）
     });
-  }
+  });
 });
