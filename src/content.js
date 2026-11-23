@@ -15,6 +15,7 @@ let currentMarginMm = 8;    // 页边距（mm）
 let currentGutterMm = 0;    // 装订线：额外加在装订侧（内侧）的边距（mm）
 let currentBold = false;    // 正文是否加粗
 let currentBodyColor = '';  // 正文颜色（空=默认）
+let currentLetterSpacing = 0;   // 字间距（px，竖排时沿列方向的字与字间距）
 
 let currentColumnCount = 0;
 let horiAlign = 'center';
@@ -647,7 +648,7 @@ const PX_PER_MM = 96 / 25.4;       // 打印按 96dpi 计算
 function measureCharAdvance(fontSize = '14pt', lineHeight = 1.5) {
   const probe = document.createElement('div');
   probe.textContent = '国'.repeat(20);
-  probe.style.cssText = `position:absolute;left:-9999px;top:0;writing-mode:vertical-rl;text-orientation:upright;font-size:${fontSize};line-height:${lineHeight};white-space:nowrap;font-family:'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','FZJinL-B_GBJF','华文楷书','KaiTi','宋体',serif;`;
+  probe.style.cssText = `position:absolute;left:-9999px;top:0;writing-mode:vertical-rl;text-orientation:upright;font-size:${fontSize};line-height:${lineHeight};letter-spacing:${typeof currentLetterSpacing !== 'undefined' ? currentLetterSpacing : 0}px;white-space:nowrap;font-family:'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','FZJinL-B_GBJF','华文楷书','KaiTi','宋体',serif;`;
   document.body.appendChild(probe);
   const h = probe.getBoundingClientRect().height;
   probe.remove();
@@ -885,6 +886,7 @@ function buildPageModel(columnEls, opts) {
       fontSize: cs.fontSize,
       fontWeight: cs.fontWeight,
       lineHeight: cs.lineHeight,
+      letterSpacing: cs.letterSpacing,
       color: cs.color
     };
     if (rect.height > usableHpx + 3 && text.length > 1 && !el.querySelector('*')) {
@@ -984,15 +986,33 @@ const FOUNDRY_PREFIXES = [
   '汉仪字库', '锐字工房', '三极', '字由', '默陌', '梅花'
 ];
 
+// Windows 自带的西文字体：字帖场景用不上，排到最后显示
+const WINDOWS_EN_FONTS = [
+  'Arial', 'Arial Black', 'Arial Narrow', 'Bahnschrift', 'Calibri', 'Cambria', 'Cambria Math',
+  'Candara', 'Comic Sans MS', 'Consolas', 'Constantia', 'Corbel', 'Courier New', 'Ebrima',
+  'Franklin Gothic Medium', 'Gabriola', 'Georgia', 'Impact', 'Ink Free', 'Javanese Text',
+  'Leelawadee UI', 'Lucida Console', 'Lucida Sans Unicode', 'Marlett', 'Microsoft Sans Serif',
+  'Mongolian Baiti', 'MS Gothic', 'MS Mincho', 'MV Boli', 'Myanmar Text', 'Nirmala UI',
+  'Palatino Linotype', 'Segoe Print', 'Segoe Script', 'Segoe UI', 'Sitka', 'Sylfaen',
+  'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana', 'Webdings', 'Wingdings',
+  'Yu Gothic', 'Book Antiqua', 'Bookman Old Style', 'Century Gothic'
+];
+
 function sortFontOptions(list) {
   const tier1Order = new Map();
   TIER1_FONTS.forEach((name, i) => tier1Order.set(name.toLowerCase(), i));
+  const winEnOrder = new Map();
+  WINDOWS_EN_FONTS.forEach((name, i) => winEnOrder.set(name.toLowerCase(), i));
 
   const rank = (name) => {
     const lower = name.toLowerCase();
     if (tier1Order.has(lower)) return { tier: 1, order: tier1Order.get(lower) };
     for (const [t1, order] of tier1Order) {
       if (lower.startsWith(t1)) return { tier: 1, order };
+    }
+    if (winEnOrder.has(lower)) return { tier: 4, order: winEnOrder.get(lower) };
+    for (const [en, order] of winEnOrder) {
+      if (lower.startsWith(en)) return { tier: 4, order };
     }
     if (FOUNDRY_PREFIXES.some(p => lower.startsWith(p.toLowerCase()) || name.startsWith(p))) {
       return { tier: 2, order: 0 };
@@ -1027,10 +1047,11 @@ function queryLocalFontsDirect() {
   if (typeof window.queryLocalFonts !== 'function') return Promise.resolve(null);
   try {
     return window.queryLocalFonts().then(faces => {
+      // 以 family 为准：同一家族的多字重只留一条
       const set = new Set();
       (faces || []).forEach(f => {
-        const name = f && (f.fullName || f.family);
-        if (name) set.add(name);
+        const name = f && (f.family || f.fullName);
+        if (name) set.add(String(name).trim());
       });
       return Array.from(set);
     }).catch(err => {
@@ -1133,7 +1154,7 @@ function getMaxCharsPerColumn(paperSize = 'A5', lineHeight = 1.5, orientation = 
 function measureMaxCharsPerColumn(innerHpx, fontSize = '14pt', lineHeight = 1.5) {
   const fam = `'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','FZJinL-B_GBJF','华文楷书','KaiTi','宋体',serif`;
   const probe = document.createElement('div');
-  probe.style.cssText = `position:absolute;left:-9999px;top:0;writing-mode:vertical-rl;text-orientation:upright;white-space:nowrap;font-size:${fontSize};line-height:${lineHeight};font-family:${fam};margin:0;padding:0;border:0;`;
+  probe.style.cssText = `position:absolute;left:-9999px;top:0;writing-mode:vertical-rl;text-orientation:upright;white-space:nowrap;font-size:${fontSize};line-height:${lineHeight};letter-spacing:${typeof currentLetterSpacing !== 'undefined' ? currentLetterSpacing : 0}px;font-family:${fam};margin:0;padding:0;border:0;`;
   document.body.appendChild(probe);
   let lo = 1, hi = 240, best = 0;
   while (lo <= hi) {
@@ -1561,6 +1582,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         <button id="fj-lineheight-plus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">+</button>
       </div>
 
+      <div style="display: flex; align-items: center; gap: 6px;" title="字间距：竖排时字与字之间的空隙">
+        <span class="fj-side-label">字距</span>
+        <button id="fj-letterspacing-minus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">−</button>
+        <span id="fj-letterspacing-val" style="min-width: 18px; text-align: center;">${currentLetterSpacing}</span><span style="font-size: 11px; color: #94a3b8; margin-left: -2px;">px</span>
+        <button id="fj-letterspacing-plus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">+</button>
+      </div>
+
       <div style="display: flex; align-items: center; gap: 6px;">
         <span class="fj-side-label">页边距</span>
         <button id="fj-margin-minus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">−</button>
@@ -1756,7 +1784,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
     pagesWrap.innerHTML = pages.map((colsOfPage, pageIndex) => {
       const colsHtml = colsOfPage.map((col) => `
-        <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
+        <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};letter-spacing:${col.letterSpacing || 'normal'};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
       `).join('');
       const frameHtml = buildPageFrame(colsOfPage, innerHmm, MARGIN_MM, pageIndex + 1);
       const pm = pageMargins(pageIndex + 1);
@@ -2026,7 +2054,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     allParagraphs.forEach(para => {
       para.style.lineHeight = currentLineHeight;
       para.style.fontFamily = `'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif`;
-      if (!para.classList.contains('epigraph')) para.style.fontSize = currentFontSize + 'pt';
+      if (!para.classList.contains('epigraph')) {
+        para.style.fontSize = currentFontSize + 'pt';
+        para.style.letterSpacing = currentLetterSpacing ? currentLetterSpacing + 'px' : '';
+      }
     });
 
     // 超过8列时，自动把行距调整为1；超过4列时，调整为1.5（仅首次渲染时自动，用户手动设定后不再覆盖）
@@ -2383,13 +2414,20 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 记住行距、页边距、纸张方向
   try {
-    chrome.storage.local.get(['lineHeight', 'marginMm', 'layoutMode', 'gutterMm'], (r) => {
+    chrome.storage.local.get(['lineHeight', 'marginMm', 'layoutMode', 'gutterMm', 'letterSpacing'], (r) => {
       let changed = false;
       const lh = Number(r && r.lineHeight);
       if (lh && lh >= 1.0 && lh <= 3.0) {
         currentLineHeight = lh;
         const span = layoutToolbar.querySelector('#fj-lineheight-val');
         if (span) span.textContent = lh.toFixed(1);
+        changed = true;
+      }
+      const ls = Number(r && r.letterSpacing);
+      if (!isNaN(ls) && ls >= -3 && ls <= 12) {
+        currentLetterSpacing = ls;
+        const lsSpan = layoutToolbar.querySelector('#fj-letterspacing-val');
+        if (lsSpan) lsSpan.textContent = String(ls);
         changed = true;
       }
       const mg = Number(r && r.marginMm);
@@ -2455,6 +2493,25 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     if (minusBtn) minusBtn.onclick = () => updateLineHeight(Math.max(1.0, currentLineHeight - 0.1));
     if (plusBtn) plusBtn.onclick = () => updateLineHeight(Math.min(3.0, currentLineHeight + 0.1));
     if (resetBtn) resetBtn.onclick = () => updateLineHeight(2.0);
+
+    // 字间距：竖排字与字之间的空隙（px）
+    const lsMinus = document.getElementById('fj-letterspacing-minus');
+    const lsPlus = document.getElementById('fj-letterspacing-plus');
+    const applyLetterSpacing = (val, silent = false) => {
+      const v = Math.min(12, Math.max(-3, Math.round(val * 2) / 2));
+      currentLetterSpacing = v;
+      const span = document.getElementById('fj-letterspacing-val');
+      if (span) span.textContent = String(v);
+      if (!silent) showToast(v ? `字间距设为 ${v}px` : '字间距恢复默认', 1000);
+      try { chrome.storage.local.set({ letterSpacing: v }); } catch (e) {}
+      // 字距变了，每列能放的字数也变 → 重新切列
+      renderVerticalContent(window.editedText || text, false);
+      const epgCount = getEpigraphCount();
+      if (epgCount > 0) applyEpigraphFormat();
+      schedulePreviewPages();
+    };
+    if (lsMinus) lsMinus.onclick = () => applyLetterSpacing(currentLetterSpacing - 0.5);
+    if (lsPlus) lsPlus.onclick = () => applyLetterSpacing(currentLetterSpacing + 0.5);
 
     // 题记按钮
     const applyBtn = document.getElementById('fj-apply-epigraph');
@@ -2651,6 +2708,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
       let fontPrevValue = null;   // 下拉打开前的输入框内容
       let fontPicked = false;     // 本次下拉是否真正选了字体
+      let fontQuery = '';         // 当前搜索词（缩放/字体补全重绘时不能把它丢掉）
 
       const closeFontPanel = () => {
         if (fontPanel) fontPanel.style.display = 'none';
@@ -2666,9 +2724,11 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       const renderFontPanel = (filter, useFilter) => {
         if (!fontPanel) return;
         const q = useFilter ? String(filter || '').trim().toLowerCase() : '';
-        const current = String(fontFamilyInput.value || '').trim();
+        fontQuery = q;   // 记住当前搜索，后续缩放/字体补全重绘要沿用
+        // 只在“已生效的字体”没被探测到时才补进列表；
+        // 不能用输入框内容（那是搜索词，输入 boya 就会凭空多出一条叫 boya 的字体）
+        const current = String(currentFontFamily || '').trim();
         let baseList = fontOptions.slice();
-        // 当前选中/输入的字体即使没被探测到，也要出现在列表里
         if (current && !baseList.includes(current)) baseList.unshift(current);
         // 分组顺序：收藏 → 最近使用 → 全部
         const favList = favoriteFonts.filter(n => !q || n.toLowerCase().includes(q));
@@ -2701,7 +2761,14 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           if (g.label) entries.push({ type: 'head', label: g.label });
           g.list.forEach(n => entries.push({ type: 'font', name: n }));
         });
-        if (!entries.some(e => e.type === 'font')) { closeFontPanel(); return; }
+        if (!entries.some(e => e.type === 'font')) {
+          if (!q) { closeFontPanel(); return; }
+          // 搜不到时只显示提示，不要关掉面板（否则会把正在输入的搜索词一起清掉）
+          fontPanel.innerHTML = `<div style="padding: 12px 10px; color: #94a3b8; font-size: 12px;">没有匹配「${q.replace(/&/g, '&amp;').replace(/</g, '&lt;')}」的字体</div>`;
+          positionFontPanel();
+          fontPanel.style.display = 'block';
+          return;
+        }
 
         const headHtml = (label) => `<div style="padding: ${(4 * s).toFixed(1)}px ${padX}px ${(3 * s).toFixed(1)}px; font-size: ${fHead}px; color: #94a3b8; background: #f8fafc; border-top: 1px solid #eef2f7; border-bottom: 1px solid #eef2f7;">${label}</div>`;
         const itemHtml = (n) => {
@@ -2806,14 +2873,15 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         if (next > 1.02) fontPanel.dataset.userSized = '1';
         if (Math.abs(next - fontPanelScale) > 0.04) {
           fontPanelScale = next;
-          renderFontPanel('', false);
+          // 保留当前搜索词：否则一拉大/一滚动搜索就被重置成完整列表
+          renderFontPanel(fontQuery, !!fontQuery);
         }
       };
       try { new ResizeObserver(syncPanelScale).observe(fontPanel); } catch (e) {}
 
-      // 字体列表异步补全（本机字体读取完成后）时，若下拉正开着就立刻重绘全量列表
+      // 字体列表异步补全（本机字体读取完成后）：若下拉正开着，沿用当前搜索词重绘
       document.addEventListener('fj-fonts-updated', () => {
-        if (fontPanel && fontPanel.style.display === 'block') renderFontPanel('', false);
+        if (fontPanel && fontPanel.style.display === 'block') renderFontPanel(fontQuery, !!fontQuery);
       });
 
       const openFontPanel = () => {
@@ -2993,10 +3061,15 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         const gutterEl = document.getElementById('fj-gutter-val');
         if (gutterEl) gutterEl.textContent = '0';
 
+        // 字间距归零
+        currentLetterSpacing = 0;
+        const lsEl = document.getElementById('fj-letterspacing-val');
+        if (lsEl) lsEl.textContent = '0';
+
         renderVerticalContent(window.editedText || text, false);
         schedulePreviewPages();
         try {
-          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false, antiqueFrame: false, pageNumber: false, pageNumberMirror: false, gutterMm: 0 });
+          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false, antiqueFrame: false, pageNumber: false, pageNumberMirror: false, gutterMm: 0, letterSpacing: 0 });
         } catch (e) {}
         showToast('版面已重置', 1200);
       };

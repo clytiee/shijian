@@ -12,10 +12,11 @@
 
   try {
     window.queryLocalFonts().then(function (faces) {
+      // 以 family 为准：同一家族的多字重只显示一条（Bold/Regular 由正文加粗开关控制）
       var set = new Set();
       (faces || []).forEach(function (f) {
-        var name = f && (f.fullName || f.family);
-        if (name) set.add(name);
+        var name = f && (f.family || f.fullName);
+        if (name) set.add(String(name).trim());
       });
       send(Array.from(set).sort());
     }).catch(function () {

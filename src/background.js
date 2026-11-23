@@ -79,10 +79,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               return { supported: false, fonts: [], error: 'unsupported' };
             }
             return window.queryLocalFonts().then(faces => {
+              // 以 family 为准：同一家族的多字重只留一条
               const set = new Set();
               (faces || []).forEach(f => {
-                const name = f && (f.fullName || f.family);
-                if (name) set.add(name);
+                const name = f && (f.family || f.fullName);
+                if (name) set.add(String(name).trim());
               });
               return { supported: true, fonts: Array.from(set).sort(), error: null };
             }).catch(err => ({
