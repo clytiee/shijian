@@ -659,43 +659,31 @@ function measureCharAdvance(fontSize = '14pt', lineHeight = 1.5) {
 let currentAntiquePaper = false;
 let antiquePaperTileUrl = '';
 
-// 生成可平铺的旧纸纹理（透明底 + 斑点与纤维），只用本地 canvas，不依赖任何外部图片
+// 旧纸纹理：改成矢量 SVG（feTurbulence 的颗粒 + 横向纸纤维），不再每次跑 canvas
+// 直接内联成 data URI，预览 / 打印 / 导图三处都能用，不依赖扩展资源路径
+function buildAntiquePaperSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">
+  <filter id="grain" x="0" y="0" width="100%" height="100%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" seed="7" result="noise"/>
+    <feColorMatrix type="saturate" values="0" in="noise" result="mono"/>
+    <feComponentTransfer in="mono" result="speck">
+      <feFuncA type="linear" slope="0.13" intercept="0"/>
+    </feComponentTransfer>
+    <feComposite in="speck" in2="SourceAlpha" operator="in"/>
+  </filter>
+  <rect x="0" y="0" width="220" height="220" fill="#7a5f33" filter="url(#grain)"/>
+  <g stroke="#967848" stroke-opacity="0.05" fill="none">
+    <path d="M0 38 C55 34, 165 42, 220 37" stroke-width="1.4"/>
+    <path d="M0 96 C60 101, 160 90, 220 97" stroke-width="1"/>
+    <path d="M0 152 C50 148, 170 156, 220 151" stroke-width="1.6"/>
+    <path d="M0 188 C58 193, 162 184, 220 189" stroke-width="0.9"/>
+  </g>
+</svg>`;
+}
+
 function getAntiquePaperTile() {
   if (antiquePaperTileUrl) return antiquePaperTileUrl;
-  const size = 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-
-  // 斑点
-  for (let i = 0; i < 2400; i++) {
-    const x = Math.random() * size;
-    const y = Math.random() * size;
-    const r = Math.random() * 1.5 + 0.3;
-    if (Math.random() < 0.62) {
-      ctx.fillStyle = `rgba(146,116,74,${0.02 + Math.random() * 0.08})`;
-    } else {
-      ctx.fillStyle = `rgba(255,253,244,${0.04 + Math.random() * 0.10})`;
-    }
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // 纸纤维
-  for (let i = 0; i < 36; i++) {
-    const y = Math.random() * size;
-    const amp = Math.random() * 5 - 2.5;
-    ctx.strokeStyle = `rgba(150,120,78,${0.015 + Math.random() * 0.04})`;
-    ctx.lineWidth = 0.4 + Math.random() * 0.8;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.bezierCurveTo(size * 0.25, y + amp, size * 0.75, y - amp, size, y + Math.random() * 2 - 1);
-    ctx.stroke();
-  }
-
-  antiquePaperTileUrl = canvas.toDataURL('image/png');
+  antiquePaperTileUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(buildAntiquePaperSvg());
   return antiquePaperTileUrl;
 }
 
@@ -800,8 +788,9 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
   const last = colsOfPage[colsOfPage.length - 1];
   const blockWpx = Math.round((last.rightMm + last.widthPx / PX_PER_MM) * PX_PER_MM);
   const blockHpx = Math.round(Math.max(...colsOfPage.map(c => c.heightPx || 0)));
-  const innerHpx = innerHmm * PX_PER_MM;
-  const paperHpx = Math.round((innerHmm + margin * 2) * PX_PER_MM);
+  // 传进来的 innerHmm 是“文字带”高度（已扣掉上下留白 padY）
+  const innerHpx = Math.round(innerHmm * PX_PER_MM);
+  const paperHpx = Math.round((innerHmm + padY * 2 + margin * 2) * PX_PER_MM);
   const marginPx = Math.round(margin * PX_PER_MM);
   const marginLPx = Math.round(pm.left * PX_PER_MM);
   const marginRPx = Math.round(pm.right * PX_PER_MM);
@@ -809,29 +798,34 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
   const padYPx = Math.round(padY * PX_PER_MM);
   // 竖排文字在列里天然靠右，界行位置再往右挪一点，让每列左右留白接近
   const ruleShiftPx = Math.round(0.9 * PX_PER_MM);
+  // 文字带在页面里居中：带顶 = 页边距 + padY，框再往外扩 padY
   const topPx = Math.max(0, marginPx + Math.round((innerHpx - blockHpx) / 2) - padYPx);
   const rightPx = marginRPx - padXPx;
 
   // 版框不越出版心：内容满页时框也停在页边距内，保证纸张上下留白
+  const bandHpx = innerHpx + padYPx * 2;      // 框允许占用的最大高度（正文带 + 上下留白）
   let frameHpx = blockHpx + padYPx * 2;
   let frameTopPx = topPx;
-  if (frameHpx > innerHpx) frameHpx = innerHpx;
-  frameTopPx = Math.max(marginPx, Math.min(frameTopPx, marginPx + innerHpx - frameHpx));
+  if (frameHpx > bandHpx) frameHpx = bandHpx;
+  frameTopPx = Math.max(marginPx, Math.min(frameTopPx, marginPx + bandHpx - frameHpx));
 
   const frameWpx = blockWpx + padXPx * 2 - ruleShiftPx;
 
   let rulesHtml = '';
   if (showFrame) {
     rulesHtml = colsOfPage.slice(0, -1).map((col) => {
-      // 界行是版框的子元素，偏移要相对版框（不是整张纸）算：列左边缘 + 半个列间距 + 左右留白
+      // 界行偏移相对版框：列左边缘 + 半个列间距 + 左右留白；再换到 SVG 的左侧坐标系
       const xpx = Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
-      // 界行缩到内线以内，不越出双线框的内线
-      return `<span style="position:absolute;top:${FRAME_INNER_INSET_PX}px;bottom:${FRAME_INNER_INSET_PX}px;right:${xpx}px;width:1px;background:${FRAME_INK_THIN};"></span>`;
+      const xLeft = frameWpx - 2 - xpx;
+      // 界行只在内线之内，不越出双线框内线
+      return `<line x1="${xLeft}" y1="${FRAME_INNER_INSET_PX}" x2="${xLeft}" y2="${frameHpx - FRAME_INNER_INSET_PX}" stroke="${FRAME_INK_THIN}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
     }).join('');
   }
 
+  // 版框用 SVG：双线 + 界行都是矢量，任何 DPI 下都不会发虚；
+  // vector-effect 保证 syncFrameGeometry 改高度时线宽仍是 2px / 0.5px，不会被拉粗拉细
   const frameHtml = showFrame
-    ? `<div class="fj-frame" style="position:absolute;right:${rightPx}px;top:${frameTopPx}px;width:${frameWpx}px;height:${frameHpx}px;border:2px solid ${FRAME_INK};box-sizing:border-box;pointer-events:none;"><span style="position:absolute;inset:${FRAME_INNER_INSET_PX}px;border:0.5px solid ${FRAME_INK_THIN};pointer-events:none;"></span>${rulesHtml}</div>`
+    ? `<svg class="fj-frame" xmlns="http://www.w3.org/2000/svg" width="${frameWpx}" height="${frameHpx}" viewBox="0 0 ${frameWpx} ${frameHpx}" preserveAspectRatio="none" style="position:absolute;right:${rightPx}px;top:${frameTopPx}px;width:${frameWpx}px;height:${frameHpx}px;overflow:visible;pointer-events:none;"><rect x="1" y="1" width="${frameWpx - 2}" height="${frameHpx - 2}" fill="none" stroke="${FRAME_INK}" stroke-width="2" vector-effect="non-scaling-stroke"/><rect x="${FRAME_INNER_INSET_PX}" y="${FRAME_INNER_INSET_PX}" width="${frameWpx - FRAME_INNER_INSET_PX * 2}" height="${frameHpx - FRAME_INNER_INSET_PX * 2}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="0.5" vector-effect="non-scaling-stroke"/>${rulesHtml}</svg>`
     : '';
 
   // 页码：整体居中放在页码所在一侧的页边距里（左页取左页边距、右页取右页边距）
@@ -1819,20 +1813,66 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     return buildPageModel(contentArea.querySelectorAll('.vertical-paragraph'), { paperSize: currentPaperSize, orientation: layoutMode, marginMm: currentMarginMm });
   }
 
+  // 用 DOM 真实位置校正版框上下位置：
+  // 分页模型里的列高是按测量估出来的，和真实渲染可能差几毫米，
+  // 一旦框比文字高，框顶会被页边距卡住，看起来就像“框顶贴着字”。
+  // 这里在渲染完成后按实际列块顶/底重新摆框，保证框内上下留白始终是 FRAME_PAD_Y_MM。
+  function syncFrameGeometry() {
+    if (!pagesWrap || !currentAntiqueFrame) return;
+    const padYPx = Math.round(FRAME_PAD_Y_MM * PX_PER_MM);
+    Array.from(pagesWrap.querySelectorAll('.fj-page')).forEach((pageEl) => {
+      const frame = pageEl.querySelector('.fj-frame');
+      const cols = pageEl.querySelector('.fj-cols');
+      if (!frame || !cols) return;
+      const cs = getComputedStyle(pageEl);
+      const padTop = parseFloat(cs.paddingTop) || 0;
+      const padBottom = parseFloat(cs.paddingBottom) || 0;
+      // 正文带高度（page 的内边距已含 padY，带内就是纯文字可用高度）
+      const bandInnerH = pageEl.clientHeight - padTop - padBottom;
+      if (bandInnerH <= 0) return;
+      // offsetTop 是相对 .fj-page 边框盒的，和 frame 的绝对定位同一坐标原点
+      const colsTop = cols.offsetTop;
+      let textTop = colsTop;
+      let textBottom = colsTop;
+      Array.from(cols.children).forEach((c) => {
+        if (!c.offsetHeight) return;
+        textTop = Math.min(textTop, colsTop + c.offsetTop);
+        textBottom = Math.max(textBottom, colsTop + c.offsetTop + c.offsetHeight);
+      });
+      if (textBottom <= textTop) { textTop = colsTop; textBottom = colsTop + cols.offsetHeight; }
+      const blockH = textBottom - textTop;
+      // 框 = 文字块 + 上下各 padY；允许占用的最大高度 = 正文带 + 2*padY
+      const maxH = bandInnerH + padYPx * 2;
+      const bandMin = Math.max(0, padTop - padYPx);   // = 页边距
+      const gap = Math.max(0, Math.min(padYPx, (maxH - blockH) / 2));
+      let h = Math.min(maxH, blockH + gap * 2);
+      let top = Math.max(bandMin, Math.min(textTop - gap, bandMin + maxH - h));
+      frame.style.top = Math.round(top) + 'px';
+      frame.style.height = Math.round(h) + 'px';
+    });
+  }
+
   function renderPreviewPages() {
     if (!pagesWrap) return;
     const { pages, pageWmm, pageHmm, MARGIN_MM } = computePages();
     if (!pages.length) { pagesWrap.innerHTML = ''; return; }
     const innerHmm = pageHmm - MARGIN_MM * 2;
+    // 开版框时，正文带上下各让出 padY，文字被限制在带宽内，框再往外扩 padY
+    const framePadY = currentAntiqueFrame ? FRAME_PAD_Y_MM : 0;
+    const bandHmm = innerHmm - framePadY * 2;
 
     pagesWrap.innerHTML = pages.map((colsOfPage, pageIndex) => {
       const colsHtml = colsOfPage.map((col) => `
         <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};letter-spacing:${col.letterSpacing || 'normal'};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
       `).join('');
-      const frameHtml = buildPageFrame(colsOfPage, innerHmm, MARGIN_MM, pageIndex + 1);
+      const frameHtml = buildPageFrame(colsOfPage, bandHmm, MARGIN_MM, pageIndex + 1);
       const pm = pageMargins(pageIndex + 1);
-      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM}mm ${pm.right}mm ${MARGIN_MM}mm ${pm.left}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
+      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM + framePadY}mm ${pm.right}mm ${MARGIN_MM + framePadY}mm ${pm.left}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
     }).join('');
+    // 渲染完立即按真实位置校正框的上下边界（预览、打印、导图都吃这套内联样式）
+    syncFrameGeometry();
+    // 字体/排版可能晚一帧才稳定，再校一次
+    requestAnimationFrame(syncFrameGeometry);
   }
 
   // 题记列号从“标题/作者列”之后开始计数
