@@ -972,6 +972,11 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       #fj-a5-panel::-webkit-scrollbar { width: 6px; }
       #fj-a5-panel::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 8px; }
       #fj-a5-panel::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+      /* 右栏滚动条做窄，避免占掉字段宽度让右栏显得窄 */
+      .fj-sidebar::-webkit-scrollbar { width: 6px; }
+      .fj-sidebar::-webkit-scrollbar-track { background: transparent; }
+      .fj-sidebar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+      .fj-sidebar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
       #fj-a5-panel::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
       /* 右栏较窄，字段名不拆行 */
@@ -1024,6 +1029,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
       /* 右栏卡片分组 */
       .fj-card {
+        box-sizing: border-box;
+        flex: 0 0 auto;
+        width: 100%;
+        min-width: 0;
         background: #fff;
         border: 1px solid #cbd5e1;
         border-radius: 10px;
@@ -1236,20 +1245,16 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   epigraphToolbar.className = 'fj-epigraph-toolbar';
   epigraphToolbar.style.cssText = `display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 8px; margin-top: 2px; border-top: 1px dashed #e2e8f0;`;
   epigraphToolbar.innerHTML = `
-    <div style="display: flex; align-items: baseline; gap: 8px;">
+    <div style="display: flex; align-items: center; gap: 6px; width: 100%; flex-wrap: nowrap; white-space: nowrap;">
       <span style="font-size: 12px; color: #475569; flex-shrink: 0;">题记</span>
-      <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1; min-width: 0;">
-        <span class="fj-side-label">标题列后</span>
-        <input id="fj-epigraph-count" type="text" inputmode="numeric" value="0" style="width:30px; height:20px; font-size:11px; padding:0 4px; text-align:center;">
-        <span class="fj-side-label">列</span>
-        <button id="fj-apply-epigraph" class="fj-btn-primary" title="应用题记设置" style="height:22px; padding:0 8px; font-size:11px; line-height:1;">应用</button>
-        <div class="fj-pill fj-pill-sm" title="标题列后列数" style="margin-left: auto;">
-          <button id="fj-epigraph-quick-1">1</button>
-          <button id="fj-epigraph-quick-2">2</button>
-          <button id="fj-epigraph-quick-3">3</button>
-          <button id="fj-epigraph-quick-4">4</button>
-          <button id="fj-epigraph-quick-5">5</button>
-        </div>
+      <input id="fj-epigraph-count" type="text" inputmode="numeric" value="0" title="标题列后的题记列数" style="width:30px; height:20px; font-size:11px; padding:0 4px; text-align:center; flex-shrink:0;">
+      <button id="fj-apply-epigraph" class="fj-btn-primary" title="应用题记设置" style="height:22px; padding:0 6px; font-size:11px; line-height:1; flex-shrink:0;">应用</button>
+      <div class="fj-pill fj-pill-sm" title="标题列后的题记列数（点击立即生效）" style="margin-left: auto; flex-shrink: 0;">
+        <button id="fj-epigraph-quick-1">1</button>
+        <button id="fj-epigraph-quick-2">2</button>
+        <button id="fj-epigraph-quick-3">3</button>
+        <button id="fj-epigraph-quick-4">4</button>
+        <button id="fj-epigraph-quick-5">5</button>
       </div>
     </div>
  `;
@@ -1353,7 +1358,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   // 右栏：编辑区
   const sidebar = document.createElement('div');
   sidebar.className = 'fj-sidebar';
-  sidebar.style.cssText = `flex: 0 0 330px; display: flex; flex-direction: column; gap: 10px; padding: 12px; min-height: 0; background: #f1f5f9; border-left: 1px solid #e2e8f0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable;`;
+  sidebar.style.cssText = `flex: 0 0 330px; display: flex; flex-direction: column; gap: 10px; padding: 12px; min-height: 0; background: #f1f5f9; border-left: 1px solid #e2e8f0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: thin;`;
 
   // 右栏标题栏
   const sideHeader = document.createElement('div');
