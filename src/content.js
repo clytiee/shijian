@@ -1029,16 +1029,48 @@ function sortFontOptions(list) {
   });
 }
 
+let fullFontListLoaded = false;   // 本机全部字体是否已读到（含磁盘缓存）
+let fontRefreshDone = false;      // 本次会话是否已向浏览器实读一次
+let fontFetchInFlight = false;
+let fontFetchAt = 0;
+
+// 字体列表缓存：上次读到的全量字体直接可用，省去每次搜索都去读一遍
+const FONT_CACHE_KEY = 'fontCache';
+const FONT_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;   // 7 天
+
+function saveFontCache() {
+  try {
+    chrome.storage.local.set({ [FONT_CACHE_KEY]: { fonts: fontOptions.slice(), at: Date.now() } });
+  } catch (e) {}
+}
+
+function loadFontCache() {
+  try {
+    chrome.storage.local.get([FONT_CACHE_KEY], (r) => {
+      const c = r && r[FONT_CACHE_KEY];
+      if (!c || !Array.isArray(c.fonts) || !c.fonts.length) return;
+      if (Date.now() - Number(c.at || 0) > FONT_CACHE_TTL) return;   // 太旧就重新读
+      const merged = c.fonts.filter(n => !fontOptions.includes(n));
+      if (merged.length) fontOptions = sortFontOptions(fontOptions.concat(merged));
+      fullFontListLoaded = true;
+      document.dispatchEvent(new Event('fj-fonts-updated'));
+    });
+  } catch (e) {}
+}
+
 function mergeFonts(list) {
   if (!Array.isArray(list) || !list.length) return false;
   let added = false;
   list.forEach(name => {
     if (name && !fontOptions.includes(name)) { fontOptions.push(name); added = true; }
   });
-  if (added) {
-    fontOptions = sortFontOptions(fontOptions);
-    document.dispatchEvent(new Event('fj-fonts-updated'));
-  }
+  const firstLoad = !fullFontListLoaded;
+  fullFontListLoaded = true;
+  fontRefreshDone = true;
+  if (added) fontOptions = sortFontOptions(fontOptions);
+  saveFontCache();
+  // 首读完成时也要通知（下拉正开着搜索，需要用全量字体重算匹配）
+  if (added || firstLoad) document.dispatchEvent(new Event('fj-fonts-updated'));
   return added;
 }
 
@@ -1063,11 +1095,19 @@ function queryLocalFontsDirect() {
   }
 }
 
-function requestLocalFonts() {
-  if (localFontsRequested) return;
+function requestLocalFonts(force) {
+  // 本次会话已经实读过就不再读；命中磁盘缓存时也只需后台刷新一次
+  if (fontRefreshDone) return;
+  if (fontFetchInFlight) return;
+  const now = Date.now();
+  if (!force && localFontsRequested && now - fontFetchAt < 5000) return;
   localFontsRequested = true;
+  fontFetchAt = now;
+  fontFetchInFlight = true;
+  const finish = () => { fontFetchInFlight = false; };
   queryLocalFontsDirect().then(fonts => {
-    if (fonts && fonts.length && mergeFonts(fonts)) return;
+    if (fonts && fonts.length && mergeFonts(fonts)) return finish();
+    finish();
     try {
       chrome.runtime.sendMessage({ action: 'GET_LOCAL_FONTS' }, (resp) => {
         if (chrome.runtime.lastError) {
@@ -1080,13 +1120,16 @@ function requestLocalFonts() {
     } catch (e) {
       injectFontProbeScript();
     }
-  });
+  }).catch(() => finish());
 }
 
 let fontOptions = [];
 let recentFonts = [];   // 最近使用过的字体（下拉里排最前）
 let favoriteFonts = []; // 收藏的字体（排在最前）
 let fontPanelScale = 1; // 字体下拉被拉大时，里面文字同步放大
+
+// 启动时先吃磁盘缓存：上次读到的全量字体立刻可用于搜索
+try { loadFontCache(); } catch (e) {}
 
 // 字体下拉里的示例句（取自《千字文》）
 const QIANZIWEN_LINES = [
@@ -2681,9 +2724,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       bindLocalFontMessages();
       const fontPanel = document.getElementById('fj-font-panel');
       const fontToggle = document.getElementById('fj-font-toggle');
-      fontOptions = sortFontOptions(detectLocalFonts());
+      // 已有磁盘缓存/已读到全量时不要覆盖，否则搜索又只剩探测出的几十个
       if (!fontOptions.length) {
-        fontOptions = sortFontOptions(FONT_CANDIDATES.slice());
+        const detected = detectLocalFonts();
+        fontOptions = sortFontOptions(detected.length ? detected : FONT_CANDIDATES.slice());
       }
 
       // 浮层挂到 body，避免被右栏 overflow 裁掉
@@ -2853,6 +2897,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         };
 
         fontPanel.innerHTML = '';
+        // 搜索时若本机全量字体还没读完，先提示，读完后会自动按当前搜索词重绘
+        if (q && !fullFontListLoaded) {
+          const note = document.createElement('div');
+          note.style.cssText = 'padding: 7px 10px; color: #b45309; background: #fffbeb; border-bottom: 1px solid #fde68a; font-size: 11px;';
+          note.textContent = '正在读取本机全部字体，结果可能还会补全…';
+          fontPanel.appendChild(note);
+        }
         fontPanel.scrollTop = 0;
         positionFontPanel();
         fontPanel.style.display = 'block';
@@ -2915,7 +2966,12 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       };
 
       fontFamilyInput.addEventListener('focus', () => { openFontPanel(); });
-      fontFamilyInput.addEventListener('input', () => { syncFontClear(); renderFontPanel(fontFamilyInput.value, true); });
+      fontFamilyInput.addEventListener('input', () => {
+        syncFontClear();
+        // 搜索要在“本机全部字体”里进行：还没读完就顺手触发一次读取
+        if (!fullFontListLoaded) requestLocalFonts();
+        renderFontPanel(fontFamilyInput.value, true);
+      });
       // 输入框内置清空按钮
       const fontClear = document.getElementById('fj-font-clear');
       function syncFontClear() {
@@ -2987,15 +3043,18 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       if (fontRefreshBtn) {
         fontRefreshBtn.onclick = () => {
           localFontsRequested = true;
+          fontRefreshDone = false;       // 手动刷新：允许重新实读一次
           queryLocalFontsDirect().then(fonts => {
             if (fonts && fonts.length) {
               mergeFonts(fonts);
               showToast(`已读取 ${fontOptions.length} 个字体`, 1500);
-            } else {
+            } else if (!fontOptions.length) {
               fontOptions = sortFontOptions(detectLocalFonts());
               showToast('未获得字体授权，使用内置候选列表', 2000);
+            } else {
+              showToast('未获得字体授权，沿用已缓存的字体列表', 2000);
             }
-            renderFontPanel('', false);
+            renderFontPanel(fontQuery, !!fontQuery);
           });
         };
       }
