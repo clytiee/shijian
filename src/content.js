@@ -311,9 +311,9 @@ async function printImage(panelElement, contentElement, titleValue) {
         color: cs.color
       };
 
-      if (rect.height > innerHpx && text.length > 1 && !el.querySelector('*')) {
+      if (rect.height > innerHpx + 3 && text.length > 1 && !el.querySelector('*')) {
         // 列比一页可用高度还高时，按高度切成多列，避免跨页断字
-        const maxChars = Math.max(1, Math.floor((text.length * innerHpx) / rect.height) - 1);
+        const maxChars = Math.max(1, Math.floor((text.length * innerHpx) / rect.height));
         for (const chunk of sliceColumnText(text, maxChars)) {
           printCols.push({
             ...base,
@@ -357,10 +357,7 @@ async function printImage(panelElement, contentElement, titleValue) {
     console.log(`[DEBUG] 打印分页: ${printPages.length} 页, ${printCols.length} 列`);
 
     // 创建打印窗口
-    const printWindow = window.open('', '_blank');
-
-    // 写入打印内容
-    printWindow.document.write(`
+    const printHtml = `
       <!DOCTYPE html>
       <html>
       <head>
@@ -414,7 +411,8 @@ async function printImage(panelElement, contentElement, titleValue) {
             flex: 0 0 auto;
             writing-mode: vertical-rl;
             text-orientation: upright;
-            overflow: hidden;
+            white-space: nowrap;
+            overflow: visible;
             text-align: start;
           }
 
@@ -440,7 +438,15 @@ async function printImage(panelElement, contentElement, titleValue) {
         ${pagesHtml}
       </body>
       </html>
-    `);
+    `;
+
+    // 打印窗口用 about:blank（blob: 隔离在某些插件下仍被注入，已改回）
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      showToast('❌ 打印窗口被拦截，请允许站点弹出窗口后重试', 2500);
+      return;
+    }
+    printWindow.document.write(printHtml);
     printWindow.document.close();
     
     // ========== 这里是你要加的位置 ==========
@@ -865,9 +871,28 @@ function getColumnHeightPx(paperSize = 'A5', orientation = 'portrait') {
 function getMaxCharsPerColumn(paperSize = 'A5', lineHeight = 1.5, orientation = 'portrait') {
   const innerHpx = getColumnHeightPx(paperSize, orientation);
   const fs = (typeof currentFontSize !== 'undefined' ? currentFontSize : 14) + 'pt';
+  // 用真实字体逐字二分实测“不换行时一列最多放几个字”，避免估算偏差导致末字折行
+  const measured = measureMaxCharsPerColumn(innerHpx, fs, lineHeight);
+  if (measured > 1) return measured;
   const advance = measureCharAdvance(fs, lineHeight);
-  // 留 1 字余量，保证列内绝不换行
-  return Math.max(1, Math.floor(innerHpx / advance) - 1);
+  return Math.max(1, Math.floor((innerHpx - 1) / advance) - 1);
+}
+
+// 实测一列能放多少字：竖排 + nowrap，二分逼近最大不折行字数
+function measureMaxCharsPerColumn(innerHpx, fontSize = '14pt', lineHeight = 1.5) {
+  const fam = `'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','FZJinL-B_GBJF','华文楷书','KaiTi','宋体',serif`;
+  const probe = document.createElement('div');
+  probe.style.cssText = `position:absolute;left:-9999px;top:0;writing-mode:vertical-rl;text-orientation:upright;white-space:nowrap;font-size:${fontSize};line-height:${lineHeight};font-family:${fam};margin:0;padding:0;border:0;`;
+  document.body.appendChild(probe);
+  let lo = 1, hi = 240, best = 0;
+  while (lo <= hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    probe.textContent = '国'.repeat(mid);
+    const h = probe.getBoundingClientRect().height;
+    if (h > 0 && h <= innerHpx - 0.5) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  probe.remove();
+  return best;
 }
 
 function getMaxColumnsPerPage(paperSize) {
@@ -1107,7 +1132,8 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         flex: 0 0 auto;
         writing-mode: vertical-rl;
         text-orientation: upright;
-        overflow: hidden;
+        white-space: nowrap;
+        overflow: visible;
         text-align: start;
       }
 
@@ -1115,6 +1141,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         writing-mode: vertical-rl;
         text-orientation: upright;
         font-size: 14pt;
+        white-space: nowrap;
         margin: 0 5px;
         display: inline-block;
         vertical-align: top;
@@ -1326,7 +1353,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   // 右栏：编辑区
   const sidebar = document.createElement('div');
   sidebar.className = 'fj-sidebar';
-  sidebar.style.cssText = `flex: 0 0 330px; display: flex; flex-direction: column; gap: 10px; padding: 12px; min-height: 0; background: #f1f5f9; border-left: 1px solid #e2e8f0; overflow: hidden;`;
+  sidebar.style.cssText = `flex: 0 0 330px; display: flex; flex-direction: column; gap: 10px; padding: 12px; min-height: 0; background: #f1f5f9; border-left: 1px solid #e2e8f0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-gutter: stable;`;
 
   // 右栏标题栏
   const sideHeader = document.createElement('div');
@@ -1412,8 +1439,8 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         color: cs.color,
         html: el.innerHTML
       };
-      if (rect.height > innerHpx && text.length > 1 && !el.querySelector('*')) {
-        const maxChars = Math.max(1, Math.floor((text.length * innerHpx) / rect.height) - 1);
+      if (rect.height > innerHpx + 3 && text.length > 1 && !el.querySelector('*')) {
+        const maxChars = Math.max(1, Math.floor((text.length * innerHpx) / rect.height));
         for (const chunk of sliceColumnText(text, maxChars)) {
           cols.push({
             ...base,
@@ -1958,6 +1985,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   footer.className = 'fj-footer fj-card';
   footer.style.cssText = `
     flex: 0 0 auto;
+    position: sticky;
+    bottom: 0;
+    z-index: 6;
+    margin-top: auto;
     padding: 10px 12px;
     border: 1px solid #e2e8f0;
     border-radius: 10px;
@@ -1965,6 +1996,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     color: #64748b;
     font-family: system-ui, sans-serif;
     background: #fff;
+    box-shadow: 0 -6px 14px rgba(15, 23, 42, 0.08);
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
