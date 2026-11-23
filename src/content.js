@@ -345,8 +345,9 @@ async function printImage(panelElement, contentElement, titleValue) {
 
     const pagesHtml = printPages.map((colsOfPage, pageIndex) => {
       const isLast = pageIndex === printPages.length - 1;
+      const pageStyle = `${isLast ? 'page-break-after:auto;break-after:auto;' : ''}${currentAntiquePaper ? antiquePaperBackground() : ''}`;
       return `
-        <div class="print-page"${isLast ? ' style="page-break-after:auto;break-after:auto;"' : ''}>
+        <div class="print-page" style="${pageStyle}">
           <div class="page-cols">
             ${colsOfPage.map((col) => `
               <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};color:${col.color || '#1e293b'};">${col.html}</div>
@@ -751,6 +752,56 @@ function measureCharAdvance(fontSize = '14pt', lineHeight = 1.5) {
   const h = probe.getBoundingClientRect().height;
   probe.remove();
   return h > 0 ? h / 20 : 18.7;
+}
+
+// ========== 仿古纸底纹 ==========
+let currentAntiquePaper = false;
+let antiquePaperTileUrl = '';
+
+// 生成可平铺的旧纸纹理（透明底 + 斑点与纤维），只用本地 canvas，不依赖任何外部图片
+function getAntiquePaperTile() {
+  if (antiquePaperTileUrl) return antiquePaperTileUrl;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  // 斑点
+  for (let i = 0; i < 2400; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const r = Math.random() * 1.5 + 0.3;
+    if (Math.random() < 0.62) {
+      ctx.fillStyle = `rgba(146,116,74,${0.02 + Math.random() * 0.08})`;
+    } else {
+      ctx.fillStyle = `rgba(255,253,244,${0.04 + Math.random() * 0.10})`;
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 纸纤维
+  for (let i = 0; i < 36; i++) {
+    const y = Math.random() * size;
+    const amp = Math.random() * 5 - 2.5;
+    ctx.strokeStyle = `rgba(150,120,78,${0.015 + Math.random() * 0.04})`;
+    ctx.lineWidth = 0.4 + Math.random() * 0.8;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.bezierCurveTo(size * 0.25, y + amp, size * 0.75, y - amp, size, y + Math.random() * 2 - 1);
+    ctx.stroke();
+  }
+
+  antiquePaperTileUrl = canvas.toDataURL('image/png');
+  return antiquePaperTileUrl;
+}
+
+// 页面底纹样式：米色底 + 斑纹平铺 + 四边轻微泛黄（用渐变而非 box-shadow，保证打印/导图都能带上）
+function antiquePaperBackground() {
+  const tile = getAntiquePaperTile();
+  return `background-color:#f7f0de;background-image:radial-gradient(circle at 50% 45%, rgba(255,255,255,0) 50%, rgba(118,88,48,0.16) 100%), url("${tile}");background-size:cover, 220px 220px;background-repeat:no-repeat, repeat;`;
 }
 
 // 探测本机可用字体（用 canvas 度量：与回退字体宽度不同即认为已安装）
@@ -1388,7 +1439,27 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         </div>
       </div>
     </div>
+
+    <div style="display: flex; align-items: center; gap: 6px; flex: 1 1 100%;">
+      <span class="fj-side-label">底纹</span>
+      <label title="给纸张加上仿古籍的旧纸底纹（预览、打印、下载图片都会带上）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-antique-paper" style="margin: 0; cursor: pointer;">
+        <span>仿古籍纸</span>
+      </label>
+    </div>
   `;
+
+  // 仿古纸底纹开关
+  const antiqueToggle = layoutToolbar.querySelector('#fj-antique-paper');
+  if (antiqueToggle) {
+    antiqueToggle.checked = currentAntiquePaper;
+    antiqueToggle.addEventListener('change', () => {
+      currentAntiquePaper = antiqueToggle.checked;
+      renderPreviewPages();
+      try { chrome.storage.local.set({ antiquePaper: currentAntiquePaper }); } catch (e) {}
+      showToast(currentAntiquePaper ? '📜 已启用仿古籍纸底纹' : '已关闭仿古籍纸底纹', 1200);
+    });
+  }
   
   // 行距调整工具栏
   /*
@@ -1552,7 +1623,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       const colsHtml = colsOfPage.map((col) => `
         <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
       `).join('');
-      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM}mm;"><div class="fj-cols">${colsHtml}</div></div>`;
+      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div></div>`;
     }).join('');
   }
 
@@ -2106,6 +2177,17 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 初始化渲染
   renderVerticalContent(text);
+
+  // 记住仿古纸底纹开关
+  try {
+    chrome.storage.local.get(['antiquePaper'], (r) => {
+      const saved = r && r.antiquePaper;
+      if (typeof saved !== 'boolean' || saved === currentAntiquePaper) return;
+      currentAntiquePaper = saved;
+      if (antiqueToggle) antiqueToggle.checked = saved;
+      renderPreviewPages();
+    });
+  } catch (e) {}
 
   // 记住上次的纸张尺寸
   try {
@@ -2699,10 +2781,16 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         currentMarginMm = 8;
         const mVal = document.getElementById('fj-margin-val');
         if (mVal) mVal.textContent = '8';
+
+        // 仿古纸底纹也一起重置为关闭
+        currentAntiquePaper = false;
+        const antiqueEl = document.getElementById('fj-antique-paper');
+        if (antiqueEl) antiqueEl.checked = false;
+
         renderVerticalContent(window.editedText || text, false);
         schedulePreviewPages();
         try {
-          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait' });
+          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false });
         } catch (e) {}
         showToast('版面已重置', 1200);
       };
