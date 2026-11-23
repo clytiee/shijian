@@ -12,6 +12,7 @@ let currentLineHeight = 2.0;
 let currentFontSize = 14;   // pt
 let currentFontFamily = '方正金陵';
 let currentMarginMm = 8;    // 页边距（mm）
+let currentGutterMm = 0;    // 装订线：额外加在装订侧（内侧）的边距（mm）
 let currentBold = false;    // 正文是否加粗
 let currentBodyColor = '';  // 正文颜色（空=默认）
 
@@ -277,10 +278,19 @@ async function printImage(panelElement, contentElement, titleValue) {
     
     console.log('currentColumnCount:', currentColumnCount);
 
-    // ===== 打印版式：按纸张真实尺寸逐页排版，从右往左竖排（古籍式） =====
-    const columnEls = Array.from(contentElement.querySelectorAll('.vertical-paragraph'));
+    // ===== 打印 = 直接克隆预览页：同一份 DOM、同一份样式，不再另写一套 CSS =====
+    const pagesEl = panelElement ? panelElement.querySelector('.fj-pages') : null;
+    if (!pagesEl || !pagesEl.children.length) {
+      if (originalCloseBtn) originalCloseBtn.style.display = originalCloseDisplay || '';
+      if (originalFooter) originalFooter.style.display = originalFooterDisplay || '';
+      if (originalToolbar) originalToolbar.style.display = originalToolbarDisplay || '';
+      if (originalEpigraphToolbar) originalEpigraphToolbar.style.display = originalEpigraphDisplay || '';
+      showToast('❌ 还没有生成预览页，无法打印', 2000);
+      return;
+    }
+    const pagesHtml = Array.from(pagesEl.children).map((n) => n.outerHTML).join('');
 
-    // 纸张尺寸（mm）
+    // 纸张尺寸（mm），仅用于 @page 声明
     const paperMm = PAPER_MM[paperSize] || PAPER_MM.A5;
     let pageWmm = paperMm.w;
     let pageHmm = paperMm.h;
@@ -290,72 +300,28 @@ async function printImage(panelElement, contentElement, titleValue) {
       pageHmm = t;
     }
 
-    const MARGIN_MM = currentMarginMm;
-    const GAP_MM = 2.6;                 // 列间距（约等于预览里的 5px × 2）
-    const innerWmm = pageWmm - MARGIN_MM * 2;
-    const innerHmm = pageHmm - MARGIN_MM * 2;
-    const innerHpx = getColumnHeightPx(paperSize, orientation);
+    // 面板里那份样式原样带过去（预览/打印共用同一套 CSS）
+    const animCss = (document.getElementById('fj-anim-style') || {}).textContent || '';
 
-    // 测量预览里每列的真实列宽、字号、行高
-    const printCols = [];
-    columnEls.forEach((el) => {
-      const rect = el.getBoundingClientRect();
-      const cs = getComputedStyle(el);
-      const text = el.textContent || '';
-      const base = {
-        widthPx: rect.width,
-        heightPx: rect.height,
-        fontSize: cs.fontSize,
-        fontWeight: cs.fontWeight,
-        lineHeight: cs.lineHeight,
-        color: cs.color
-      };
-
-      if (rect.height > innerHpx + 3 && text.length > 1 && !el.querySelector('*')) {
-        // 列比一页可用高度还高时，按高度切成多列，避免跨页断字
-        const maxChars = Math.max(1, Math.floor((text.length * innerHpx) / rect.height));
-        for (const chunk of sliceColumnText(text, maxChars)) {
-          printCols.push({
-            ...base,
-            heightPx: rect.height * (chunk.length / text.length),
-            html: escapeHtml(chunk)
-          });
-        }
-      } else {
-        printCols.push({ ...base, html: el.innerHTML });
+    // 只追加“打印窗口独有”的少量规则：纸张声明、分页、屏幕预览外观
+    const printOnlyCss = `
+      @page { size: ${pageWmm}mm ${pageHmm}mm; margin: 0; }
+      html, body { margin: 0; padding: 0; background: #fff; }
+      body {
+        background: #fff;
+        font-family: '${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
       }
-    });
-
-    // 逐页装列：从右往左填充，放不下就换页
-    const printPages = [];
-    let pageCols = [];
-    let usedWmm = 0;
-    printCols.forEach((col) => {
-      const widthMm = col.widthPx / PX_PER_MM;
-      if (pageCols.length && usedWmm + widthMm > innerWmm) {
-        printPages.push(pageCols);
-        pageCols = [];
-        usedWmm = 0;
+      .fj-pages { display: block; padding: 0; gap: 0; }
+      .fj-page { margin: 0 auto; box-shadow: none !important; page-break-after: always; break-after: page; }
+      .fj-page:last-child { page-break-after: auto; break-after: auto; }
+      @media screen {
+        body { padding: 10mm; background: #e5e7eb; }
+        .fj-page { margin: 0 auto 8mm; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15) !important; }
       }
-      col.rightMm = usedWmm;
-      pageCols.push(col);
-      usedWmm += widthMm + GAP_MM;
-    });
-    if (pageCols.length) printPages.push(pageCols);
-
-    const pagesHtml = printPages.map((colsOfPage, pageIndex) => {
-      const isLast = pageIndex === printPages.length - 1;
-      const pageStyle = `${isLast ? 'page-break-after:auto;break-after:auto;' : ''}${currentAntiquePaper ? antiquePaperBackground() : ''}`;
-      return `
-        <div class="print-page" style="${pageStyle}">
-          <div class="page-cols">
-            ${colsOfPage.map((col) => `
-              <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};color:${col.color || '#1e293b'};">${col.html}</div>
-            `).join('')}
-          </div>
-        </div>`;
-    }).join('');
-    console.log(`[DEBUG] 打印分页: ${printPages.length} 页, ${printCols.length} 列`);
+    `;
+    console.log(`[DEBUG] 打印页数: ${pagesEl.children.length}`);
 
     // 创建打印窗口
     const printHtml = `
@@ -365,78 +331,12 @@ async function printImage(panelElement, contentElement, titleValue) {
         <title>${escapeHtml(titleValue)} - 元素图文·时见</title>
         <meta charset="UTF-8">
         <style>
-          * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-          }
-
-          html, body {
-            background: white;
-          }
-
-          body {
-            margin: 0;
-            background: white;
-            font-family: '${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-          }
-
-          /* 一页 = 一整张纸：页边距用 padding，列内容垂直居中，从右往左排 */
-          .print-page {
-            position: relative;
-            width: ${pageWmm}mm;
-            height: ${pageHmm}mm;
-            overflow: hidden;
-            page-break-after: always;
-            break-after: page;
-            padding: ${MARGIN_MM}mm;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: flex-end;
-          }
-
-          .page-cols {
-            display: flex;
-            flex-direction: row-reverse;
-            align-items: flex-start;
-            gap: ${GAP_MM}mm;
-            max-width: 100%;
-            max-height: 100%;
-          }
-
-          /* 一列竖排文字 */
-          .vcol {
-            flex: 0 0 auto;
-            writing-mode: vertical-rl;
-            text-orientation: upright;
-            white-space: nowrap;
-            overflow: visible;
-            text-align: start;
-          }
-
-          @media screen {
-            body {
-              padding: 10mm;
-              background: #e5e7eb;
-            }
-            .print-page {
-              margin: 0 auto 8mm;
-              background: white;
-              box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-            }
-          }
-
-          @page {
-            size: ${pageSize};
-            margin: 0;
-          }
+          ${animCss}
+          ${printOnlyCss}
         </style>
       </head>
       <body>
-        ${pagesHtml}
+        <div class="fj-pages">${pagesHtml}</div>
       </body>
       </html>
     `;
@@ -804,6 +704,238 @@ function antiquePaperBackground() {
   return `background-color:#f7f0de;background-image:radial-gradient(circle at 50% 45%, rgba(255,255,255,0) 50%, rgba(118,88,48,0.16) 100%), url("${tile}");background-size:cover, 220px 220px;background-repeat:no-repeat, repeat;`;
 }
 
+// ========== 古籍版框（淡墨双线边框 + 界行） ==========
+let currentAntiqueFrame = false;
+const FRAME_GAP_MM = 2.6;    // 列间距，须与分页时的 GAP_MM 一致
+const FRAME_PAD_X_MM = 2.6;  // 版框左右留白
+const FRAME_PAD_Y_MM = 4.0;  // 版框上下留白
+const FRAME_INK = '#6b6357';        // 外框墨色（深一些）
+const FRAME_INK_THIN = '#958c7c';   // 内侧细线与界行
+const FRAME_INNER_INSET_PX = 5;     // 内侧细线相对外框的内缩距离
+
+// 阿拉伯数字转中文数字（用于页码）
+function toChineseNumeral(n) {
+  const d = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
+  n = Math.floor(Number(n) || 0);
+  if (n <= 0) return '零';
+  if (n < 10) return d[n];
+  if (n < 20) return '十' + (n % 10 ? d[n % 10] : '');
+  if (n < 100) {
+    const t = Math.floor(n / 10);
+    const u = n % 10;
+    return d[t] + '十' + (u ? d[u] : '');
+  }
+  if (n < 1000) {
+    const h = Math.floor(n / 100);
+    const rest = n % 100;
+    return d[h] + '百' + (rest ? (rest < 10 ? '零' : '') + toChineseNumeral(rest) : '');
+  }
+  return String(n);
+}
+
+let currentPageNumber = false;
+let currentPageNumberMirror = false;   // 奇偶页对称：奇数页码在左、偶数页码在右
+const PN_COL_W_MM = 4.2;               // 页码所占的那一列宽度（用于对称时扣减页边距）
+
+// 页码落在哪一侧：未开对称时始终在左
+function pageNoSide(pageNo) {
+  if (!currentPageNumberMirror) return 'left';
+  return (Number(pageNo) % 2 === 1) ? 'left' : 'right';
+}
+
+// 每页的左右页边距（mm）
+// 基础左右相等；装订线额外加在装订侧（内侧）：
+//   奇偶对称开 → 页码在外侧，装订侧与页码相对（奇数页装订在右、偶数页装订在左）
+//   奇偶对称关 → 装订线固定在左侧（单面装订的常规做法）
+function pageMargins(pageNo) {
+  const base = currentMarginMm;
+  const gutter = Math.max(0, Number(currentGutterMm) || 0);
+  if (!gutter) return { left: base, right: base };
+  const mirror = !!currentPageNumberMirror;
+  const odd = mirror
+    ? { left: base, right: base + gutter }       // 奇数页：页码在左、装订在右
+    : { left: base + gutter, right: base };
+  if (!mirror) return odd;
+  return (Number(pageNo) % 2 === 1) ? odd : { left: odd.right, right: odd.left };
+}
+
+// 装订线占掉的版心宽度（两侧各页总和一致，分页可直接扣）
+function gutterTotalWmm() {
+  return Math.max(0, Number(currentGutterMm) || 0);
+}
+
+// 把一页的列宽铺满整个版心：字号变大导致列数减少、右侧还剩空白时，
+// 把剩余宽度均摊给各列（相当于把行距略微放宽），使版心左右两边都不留宽窄不一的空白
+function fillPageWidth(pageCols, innerWmm, gapMm) {
+  const n = pageCols.length;
+  if (!n) return;
+  let usedPx = 0;
+  pageCols.forEach((c) => { usedPx += c.widthPx; });
+  usedPx += (n - 1) * gapMm * PX_PER_MM;
+  const extraPx = innerWmm * PX_PER_MM - usedPx;
+  if (extraPx > 0.5) {
+    const each = extraPx / n;
+    pageCols.forEach((c) => { c.widthPx += each; });
+  }
+  // 列宽变化后重算每列相对版心右缘的偏移
+  let acc = 0;
+  pageCols.forEach((c) => {
+    c.rightMm = acc / PX_PER_MM;
+    acc += c.widthPx + gapMm * PX_PER_MM;
+  });
+}
+
+// 用当前页的列位置生成版框：外框粗线 + 内侧细线，列与列之间画界行
+// 注意：绝对定位是相对 .fj-page/.print-page 的 padding box（即整张纸），所以偏移要加上页边距
+// 位置统一换算成整数 CSS px，避免 1px 细线落在半像素上发虚、看起来缺一条或粗细不一
+function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
+  if (!colsOfPage || !colsOfPage.length) return '';
+  const showFrame = currentAntiqueFrame;
+  if (!showFrame && !currentPageNumber) return '';
+  const margin = Number(marginMm) || 0;
+  const pm = pageNo ? pageMargins(pageNo) : { left: margin, right: margin };
+  const padX = FRAME_PAD_X_MM;
+  const padY = FRAME_PAD_Y_MM;
+  const last = colsOfPage[colsOfPage.length - 1];
+  const blockWpx = Math.round((last.rightMm + last.widthPx / PX_PER_MM) * PX_PER_MM);
+  const blockHpx = Math.round(Math.max(...colsOfPage.map(c => c.heightPx || 0)));
+  const innerHpx = innerHmm * PX_PER_MM;
+  const paperHpx = Math.round((innerHmm + margin * 2) * PX_PER_MM);
+  const marginPx = Math.round(margin * PX_PER_MM);
+  const marginLPx = Math.round(pm.left * PX_PER_MM);
+  const marginRPx = Math.round(pm.right * PX_PER_MM);
+  const padXPx = Math.round(padX * PX_PER_MM);
+  const padYPx = Math.round(padY * PX_PER_MM);
+  // 竖排文字在列里天然靠右，界行位置再往右挪一点，让每列左右留白接近
+  const ruleShiftPx = Math.round(0.9 * PX_PER_MM);
+  const topPx = Math.max(0, marginPx + Math.round((innerHpx - blockHpx) / 2) - padYPx);
+  const rightPx = marginRPx - padXPx;
+
+  // 版框不越出版心：内容满页时框也停在页边距内，保证纸张上下留白
+  let frameHpx = blockHpx + padYPx * 2;
+  let frameTopPx = topPx;
+  if (frameHpx > innerHpx) frameHpx = innerHpx;
+  frameTopPx = Math.max(marginPx, Math.min(frameTopPx, marginPx + innerHpx - frameHpx));
+
+  const frameWpx = blockWpx + padXPx * 2 - ruleShiftPx;
+
+  let rulesHtml = '';
+  if (showFrame) {
+    rulesHtml = colsOfPage.slice(0, -1).map((col) => {
+      // 界行是版框的子元素，偏移要相对版框（不是整张纸）算：列左边缘 + 半个列间距 + 左右留白
+      const xpx = Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
+      // 界行缩到内线以内，不越出双线框的内线
+      return `<span style="position:absolute;top:${FRAME_INNER_INSET_PX}px;bottom:${FRAME_INNER_INSET_PX}px;right:${xpx}px;width:1px;background:${FRAME_INK_THIN};"></span>`;
+    }).join('');
+  }
+
+  const frameHtml = showFrame
+    ? `<div class="fj-frame" style="position:absolute;right:${rightPx}px;top:${frameTopPx}px;width:${frameWpx}px;height:${frameHpx}px;border:2px solid ${FRAME_INK};box-sizing:border-box;pointer-events:none;"><span style="position:absolute;inset:${FRAME_INNER_INSET_PX}px;border:0.5px solid ${FRAME_INK_THIN};pointer-events:none;"></span>${rulesHtml}</div>`
+    : '';
+
+  // 页码：整体居中放在页码所在一侧的页边距里（左页取左页边距、右页取右页边距）
+  // 盒子等于整条页边距宽度，页码由此不会压到正文，也不会跨到版框线上
+  // 作为 .fj-page 的直接子元素，避免被版框自身的盒子裁掉
+  const noHpx = Math.round(3.6 * PX_PER_MM);
+  const frameBottomGapPx = paperHpx - (frameTopPx + frameHpx);   // 框底到纸边的距离
+  const noBottomPx = Math.max(2, frameBottomGapPx);
+  // 页码：居中放在页码所在一侧的页边距里，且整字落在版框外线之外
+  // 纸张 → 页码 → 版框外线 → 正文，永不相互压叠
+  const noOnRight = pageNoSide(pageNo) === 'right';
+  const noBandRPx = Math.max(noHpx + 2, marginRPx - padXPx);
+  const noBandLPx = Math.max(noHpx + 2, marginLPx - padXPx);
+  const noPosStyle = noOnRight
+    ? `right:0;width:${noBandRPx}px;text-align:center;`
+    : `left:0;width:${noBandLPx}px;text-align:center;`;
+  const pageNoHtml = (currentPageNumber && pageNo)
+    ? `<span class="fj-pageno" style="position:absolute;box-sizing:border-box;bottom:${noBottomPx}px;${noPosStyle}font-size:${noHpx}px;line-height:1;color:${FRAME_INK};font-family:'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','KaiTi','宋体',serif;letter-spacing:0.5px;white-space:nowrap;">${toChineseNumeral(pageNo)}</span>`
+    : '';
+
+  return frameHtml + pageNoHtml;
+}
+
+// ========== 统一分页模型：预览与打印共用同一套算法 ==========
+// 输入一组的竖排列元素（.vertical-paragraph），输出每页的列（含列宽、右偏移、HTML）
+function buildPageModel(columnEls, opts) {
+  const o = opts || {};
+  const paperSize = o.paperSize || 'A5';
+  const orientation = o.orientation || 'portrait';
+  const paperMm = PAPER_MM[paperSize] || PAPER_MM.A5;
+  let pageWmm = paperMm.w;
+  let pageHmm = paperMm.h;
+  if (orientation === 'landscape') {
+    pageWmm = paperMm.h;
+    pageHmm = paperMm.w;
+  }
+  const MARGIN_MM = Number(o.marginMm) || currentMarginMm;
+  const GAP_MM = 2.6;
+  const innerWmm = pageWmm - MARGIN_MM * 2 - gutterTotalWmm();
+  const innerHmm = pageHmm - MARGIN_MM * 2;
+  const usableHpx = getColumnHeightPx(paperSize, orientation);
+
+  const cols = [];
+  Array.from(columnEls).forEach((el) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const cs = getComputedStyle(el);
+    const text = el.textContent || '';
+    const base = {
+      widthPx: rect.width,
+      heightPx: rect.height,
+      fontSize: cs.fontSize,
+      fontWeight: cs.fontWeight,
+      lineHeight: cs.lineHeight,
+      color: cs.color
+    };
+    if (rect.height > usableHpx + 3 && text.length > 1 && !el.querySelector('*')) {
+      // 列比一页可用高度还高时按高度切列，避免跨页断字
+      const maxChars = Math.max(1, Math.floor((text.length * usableHpx) / rect.height));
+      for (const chunk of sliceColumnText(text, maxChars)) {
+        cols.push({
+          ...base,
+          heightPx: rect.height * (chunk.length / text.length),
+          html: escapeHtml(chunk)
+        });
+      }
+    } else {
+      cols.push({ ...base, html: el.innerHTML });
+    }
+  });
+
+  const pages = [];
+  let pageCols = [];
+  let usedWmm = 0;
+  cols.forEach((col) => {
+    const widthMm = col.widthPx / PX_PER_MM;
+    if (pageCols.length && usedWmm + widthMm > innerWmm) {
+      pages.push(pageCols);
+      pageCols = [];
+      usedWmm = 0;
+    }
+    col.rightMm = usedWmm;
+    pageCols.push(col);
+    usedWmm += widthMm + GAP_MM;
+  });
+  if (pageCols.length) pages.push(pageCols);
+  // 除最后一页外，每页列宽铺满版心
+  pages.forEach((p, i) => {
+    if (i < pages.length - 1) fillPageWidth(p, innerWmm, GAP_MM);
+  });
+
+  return {
+    pages,
+    cols,
+    pageWmm,
+    pageHmm,
+    MARGIN_MM,
+    innerHmm,
+    innerWmm,
+    gapMm: GAP_MM,
+    paperSize,
+    orientation
+  };
+}
+
 // 探测本机可用字体（用 canvas 度量：与回退字体宽度不同即认为已安装）
 const FONT_CANDIDATES = [
   '方正金陵', '微软雅黑', '微软雅黑 Light', '宋体', '新宋体', '黑体', '楷体', '仿宋', '等线', '幼圆', '隶书',
@@ -981,7 +1113,9 @@ function detectLocalFonts() {
 function getColumnHeightPx(paperSize = 'A5', orientation = 'portrait') {
   const size = PAPER_MM[paperSize] || PAPER_MM.A5;
   const pageHmm = orientation === 'landscape' ? size.w : size.h;
-  return (pageHmm - currentMarginMm * 2) * PX_PER_MM;
+  // 开了版框时，上下各留出版框留白，保证框内文字上下有白、框本身不越出版心
+  const framePadMm = (typeof currentAntiqueFrame !== 'undefined' && currentAntiqueFrame) ? FRAME_PAD_Y_MM * 2 : 0;
+  return (pageHmm - currentMarginMm * 2 - framePadMm) * PX_PER_MM;
 }
 
 // 根据纸张可用高度动态计算每列字数（随字号、行距变化）
@@ -1438,13 +1572,32 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           <button id="fj-margin-quick-wide" style="padding: 0 7px; font-size: 10px;">宽</button>
         </div>
       </div>
+
+      <div style="display: flex; align-items: center; gap: 6px;" title="装订线：额外加在内侧（装订侧）的边距；开「奇偶对称」时奇数页在右、偶数页在左">
+        <span class="fj-side-label">装订线</span>
+        <button id="fj-gutter-minus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">−</button>
+        <span id="fj-gutter-val" style="min-width: 16px; text-align: center;">${currentGutterMm}</span><span style="font-size: 11px; color: #94a3b8; margin-left: -2px;">mm</span>
+        <button id="fj-gutter-plus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">+</button>
+      </div>
     </div>
 
-    <div style="display: flex; align-items: center; gap: 6px; flex: 1 1 100%;">
+    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: 1 1 100%;">
       <span class="fj-side-label">底纹</span>
       <label title="给纸张加上仿古籍的旧纸底纹（预览、打印、下载图片都会带上）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-antique-paper" style="margin: 0; cursor: pointer;">
         <span>仿古籍纸</span>
+      </label>
+      <label title="加淡墨双线版框和界行（古籍刻本样式）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-antique-frame" style="margin: 0; cursor: pointer;">
+        <span>版框</span>
+      </label>
+      <label title="在版心外侧标中文数字页码" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-page-number" style="margin: 0; cursor: pointer;">
+        <span>页码</span>
+      </label>
+      <label title="奇偶页对称：奇数页页码在左、偶数页在右，有页码一侧的页边距减去半个页码列宽" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-page-number-mirror" style="margin: 0; cursor: pointer;">
+        <span>奇偶对称</span>
       </label>
     </div>
   `;
@@ -1460,8 +1613,47 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       showToast(currentAntiquePaper ? '📜 已启用仿古籍纸底纹' : '已关闭仿古籍纸底纹', 1200);
     });
   }
+
+  // 版框开关
+  const frameToggle = layoutToolbar.querySelector('#fj-antique-frame');
+  if (frameToggle) {
+    frameToggle.checked = currentAntiqueFrame;
+    frameToggle.addEventListener('change', () => {
+      currentAntiqueFrame = frameToggle.checked;
+      // 版框会占去上下留白，列可容纳字数变化 → 需要重新切列
+      renderVerticalContent(window.editedText || text, false);
+      renderPreviewPages();
+      try { chrome.storage.local.set({ antiqueFrame: currentAntiqueFrame }); } catch (e) {}
+      showToast(currentAntiqueFrame ? '已加上古籍版框' : '已关闭版框', 1200);
+    });
+  }
   
-  // 行距调整工具栏
+  // 页码开关（页码画在版框上，需要版框开着才显示）
+  const pageNumberToggle = layoutToolbar.querySelector('#fj-page-number');
+  if (pageNumberToggle) {
+    pageNumberToggle.checked = currentPageNumber;
+    pageNumberToggle.addEventListener('change', () => {
+      currentPageNumber = pageNumberToggle.checked;
+      if (currentPageNumber && !currentAntiqueFrame) showToast('页码需要配合「版框」显示', 1500);
+      renderPreviewPages();
+      try { chrome.storage.local.set({ pageNumber: currentPageNumber }); } catch (e) {}
+      showToast(currentPageNumber ? '已显示页码' : '已隐藏页码', 1200);
+    });
+  }
+
+  // 奇偶页对称：奇数页页码在左、偶数页页码在右，页码一侧页边距减半个页码列宽
+  const pageNumberMirrorToggle = layoutToolbar.querySelector('#fj-page-number-mirror');
+  if (pageNumberMirrorToggle) {
+    pageNumberMirrorToggle.checked = currentPageNumberMirror;
+    pageNumberMirrorToggle.addEventListener('change', () => {
+      currentPageNumberMirror = pageNumberMirrorToggle.checked;
+      // 只影响页码落在哪一侧，版心与分页不变，重画页面即可
+      renderPreviewPages();
+      try { chrome.storage.local.set({ pageNumberMirror: currentPageNumberMirror }); } catch (e) {}
+      showToast(currentPageNumberMirror ? '已启用奇偶页对称' : '已关闭奇偶页对称', 1200);
+    });
+  }
+  
   /*
   const lineHeightToolbar = document.createElement('div');
   lineHeightToolbar.className = 'fj-lineheight-toolbar';
@@ -1552,78 +1744,23 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   }
 
   function computePages() {
-    const paperMm = PAPER_MM[currentPaperSize] || PAPER_MM.A5;
-    let pageWmm = paperMm.w;
-    let pageHmm = paperMm.h;
-    if (layoutMode === 'landscape') {
-      pageWmm = paperMm.h;
-      pageHmm = paperMm.w;
-    }
-    const MARGIN_MM = currentMarginMm;
-    const GAP_MM = 2.6;
-    const innerWmm = pageWmm - MARGIN_MM * 2;
-    const innerHmm = pageHmm - MARGIN_MM * 2;
-    const innerHpx = innerHmm * PX_PER_MM;
-
-    const cols = [];
-    contentArea.querySelectorAll('.vertical-paragraph').forEach((el) => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width <= 0) return;
-      const cs = getComputedStyle(el);
-      const text = el.textContent || '';
-      const base = {
-        widthPx: rect.width,
-        heightPx: rect.height,
-        fontSize: cs.fontSize,
-        fontWeight: cs.fontWeight,
-        lineHeight: cs.lineHeight,
-        color: cs.color,
-        color: cs.color,
-        html: el.innerHTML
-      };
-      if (rect.height > innerHpx + 3 && text.length > 1 && !el.querySelector('*')) {
-        const maxChars = Math.max(1, Math.floor((text.length * innerHpx) / rect.height));
-        for (const chunk of sliceColumnText(text, maxChars)) {
-          cols.push({
-            ...base,
-            heightPx: rect.height * (chunk.length / text.length),
-            html: escapeHtml(chunk)
-          });
-        }
-      } else {
-        cols.push(base);
-      }
-    });
-
-    const pages = [];
-    let pageCols = [];
-    let usedWmm = 0;
-    cols.forEach((col) => {
-      const widthMm = col.widthPx / PX_PER_MM;
-      if (pageCols.length && usedWmm + widthMm > innerWmm) {
-        pages.push(pageCols);
-        pageCols = [];
-        usedWmm = 0;
-      }
-      col.rightMm = usedWmm;
-      pageCols.push(col);
-      usedWmm += widthMm + GAP_MM;
-    });
-    if (pageCols.length) pages.push(pageCols);
-
-    return { pages, pageWmm, pageHmm, MARGIN_MM, innerHmm };
+    // 与打印共用同一套分页模型
+    return buildPageModel(contentArea.querySelectorAll('.vertical-paragraph'), { paperSize: currentPaperSize, orientation: layoutMode, marginMm: currentMarginMm });
   }
 
   function renderPreviewPages() {
     if (!pagesWrap) return;
     const { pages, pageWmm, pageHmm, MARGIN_MM } = computePages();
     if (!pages.length) { pagesWrap.innerHTML = ''; return; }
+    const innerHmm = pageHmm - MARGIN_MM * 2;
 
     pagesWrap.innerHTML = pages.map((colsOfPage, pageIndex) => {
       const colsHtml = colsOfPage.map((col) => `
         <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
       `).join('');
-      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div></div>`;
+      const frameHtml = buildPageFrame(colsOfPage, innerHmm, MARGIN_MM, pageIndex + 1);
+      const pm = pageMargins(pageIndex + 1);
+      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM}mm ${pm.right}mm ${MARGIN_MM}mm ${pm.left}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
     }).join('');
   }
 
@@ -2178,14 +2315,37 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   // 初始化渲染
   renderVerticalContent(text);
 
-  // 记住仿古纸底纹开关
+  // 记住仿古纸底纹、版框、页码开关
   try {
-    chrome.storage.local.get(['antiquePaper'], (r) => {
+    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'pageNumber', 'pageNumberMirror'], (r) => {
+      let changed = false;
       const saved = r && r.antiquePaper;
-      if (typeof saved !== 'boolean' || saved === currentAntiquePaper) return;
-      currentAntiquePaper = saved;
-      if (antiqueToggle) antiqueToggle.checked = saved;
-      renderPreviewPages();
+      if (typeof saved === 'boolean' && saved !== currentAntiquePaper) {
+        currentAntiquePaper = saved;
+        if (antiqueToggle) antiqueToggle.checked = saved;
+        changed = true;
+      }
+      const savedFrame = r && r.antiqueFrame;
+      if (typeof savedFrame === 'boolean' && savedFrame !== currentAntiqueFrame) {
+        currentAntiqueFrame = savedFrame;
+        if (frameToggle) frameToggle.checked = savedFrame;
+        renderVerticalContent(window.editedText || text, false);
+        changed = true;
+      }
+      const savedPageNo = r && r.pageNumber;
+      if (typeof savedPageNo === 'boolean' && savedPageNo !== currentPageNumber) {
+        currentPageNumber = savedPageNo;
+        if (pageNumberToggle) pageNumberToggle.checked = savedPageNo;
+        changed = true;
+      }
+      const savedMirror = r && r.pageNumberMirror;
+      if (typeof savedMirror === 'boolean' && savedMirror !== currentPageNumberMirror) {
+        currentPageNumberMirror = savedMirror;
+        const mirrorEl = layoutToolbar.querySelector('#fj-page-number-mirror');
+        if (mirrorEl) mirrorEl.checked = savedMirror;
+        changed = true;
+      }
+      if (changed) renderPreviewPages();
     });
   } catch (e) {}
 
@@ -2223,7 +2383,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 记住行距、页边距、纸张方向
   try {
-    chrome.storage.local.get(['lineHeight', 'marginMm', 'layoutMode'], (r) => {
+    chrome.storage.local.get(['lineHeight', 'marginMm', 'layoutMode', 'gutterMm'], (r) => {
       let changed = false;
       const lh = Number(r && r.lineHeight);
       if (lh && lh >= 1.0 && lh <= 3.0) {
@@ -2237,6 +2397,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         currentMarginMm = mg;
         const span = layoutToolbar.querySelector('#fj-margin-val');
         if (span) span.textContent = String(mg);
+        changed = true;
+      }
+      const gut = Number(r && r.gutterMm);
+      if (!isNaN(gut) && gut >= 0 && gut <= 30) {
+        currentGutterMm = gut;
+        const gSpan = layoutToolbar.querySelector('#fj-gutter-val');
+        if (gSpan) gSpan.textContent = String(gut);
         changed = true;
       }
       const mode = r && r.layoutMode;
@@ -2372,6 +2539,25 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     };
     if (marginMinus) marginMinus.onclick = () => applyMargin(currentMarginMm - 1);
     if (marginPlus) marginPlus.onclick = () => applyMargin(currentMarginMm + 1);
+
+    // 装订线：额外加在内侧的边距
+    const gutterMinus = document.getElementById('fj-gutter-minus');
+    const gutterPlus = document.getElementById('fj-gutter-plus');
+    const applyGutter = (val, silent = false) => {
+      const v = Math.min(30, Math.max(0, Math.round(val)));
+      currentGutterMm = v;
+      const span = document.getElementById('fj-gutter-val');
+      if (span) span.textContent = String(v);
+      if (!silent) showToast(v ? `装订线设为 ${v}mm` : '已取消装订线', 1000);
+      try { chrome.storage.local.set({ gutterMm: v }); } catch (e) {}
+      // 装订线占掉版心宽度，列数会变 → 重新排版
+      renderVerticalContent(window.editedText || text, false);
+      const epgCount = getEpigraphCount();
+      if (epgCount > 0) applyEpigraphFormat();
+      schedulePreviewPages();
+    };
+    if (gutterMinus) gutterMinus.onclick = () => applyGutter(currentGutterMm - 1);
+    if (gutterPlus) gutterPlus.onclick = () => applyGutter(currentGutterMm + 1);
 
     // 正文加粗开关
     const boldToggle = document.getElementById('fj-bold-toggle');
@@ -2787,10 +2973,30 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         const antiqueEl = document.getElementById('fj-antique-paper');
         if (antiqueEl) antiqueEl.checked = false;
 
+        // 版框也重置为关闭
+        currentAntiqueFrame = false;
+        const frameEl = document.getElementById('fj-antique-frame');
+        if (frameEl) frameEl.checked = false;
+
+        // 页码也重置为关闭
+        currentPageNumber = false;
+        const pageNoEl = document.getElementById('fj-page-number');
+        if (pageNoEl) pageNoEl.checked = false;
+
+        // 奇偶对称也重置为关闭
+        currentPageNumberMirror = false;
+        const mirrorEl = document.getElementById('fj-page-number-mirror');
+        if (mirrorEl) mirrorEl.checked = false;
+
+        // 装订线归零
+        currentGutterMm = 0;
+        const gutterEl = document.getElementById('fj-gutter-val');
+        if (gutterEl) gutterEl.textContent = '0';
+
         renderVerticalContent(window.editedText || text, false);
         schedulePreviewPages();
         try {
-          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false });
+          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false, antiqueFrame: false, pageNumber: false, pageNumberMirror: false, gutterMm: 0 });
         } catch (e) {}
         showToast('版面已重置', 1200);
       };
