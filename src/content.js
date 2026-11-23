@@ -1027,6 +1027,21 @@ let fullFontListLoaded = false;   // 本机全部字体是否已读到（含磁�
 let fontRefreshDone = false;      // 本次会话是否已向浏览器实读一次
 let fontFetchInFlight = false;
 let fontFetchAt = 0;
+let fontReplacePending = false;   // 手动“重新读取”时置位：拿到新名单后整表替换（不是追加）
+// 字体别名：family → 其它可搜的名字（fullName 等）。中文家族名 + 英文全名时，搜英文也能命中
+let fontAliases = {};
+
+function registerFontAliases(map) {
+  if (!map || typeof map !== 'object') return;
+  Object.keys(map).forEach((key) => {
+    const extra = Array.isArray(map[key]) ? map[key] : [map[key]];
+    const list = fontAliases[key] || (fontAliases[key] = []);
+    extra.forEach((n) => {
+      const v = String(n || '').trim();
+      if (v && !list.includes(v)) list.push(v);
+    });
+  });
+}
 
 // 字体列表缓存：上次读到的全量字体直接可用，省去每次搜索都去读一遍
 const FONT_CACHE_KEY = 'fontCache';
@@ -1052,20 +1067,58 @@ function loadFontCache() {
   } catch (e) {}
 }
 
-function mergeFonts(list) {
+function mergeFonts(list, replace) {
   if (!Array.isArray(list) || !list.length) return false;
   let added = false;
-  list.forEach(name => {
-    if (name && !fontOptions.includes(name)) { fontOptions.push(name); added = true; }
-  });
+  if (replace) {
+    // 手动重新读取：整表替换成这次拿到的系统字体（保留内置候选兜底）
+    const fresh = new Set();
+    list.forEach(n => { const v = String(n || '').trim(); if (v) fresh.add(v); });
+    FONT_CANDIDATES.forEach(n => { if (!fresh.has(n)) fresh.add(n); });
+    fontOptions = sortFontOptions(Array.from(fresh));
+    added = true;
+  } else {
+    list.forEach(name => {
+      if (name && !fontOptions.includes(name)) { fontOptions.push(name); added = true; }
+    });
+    if (added) fontOptions = sortFontOptions(fontOptions);
+  }
   const firstLoad = !fullFontListLoaded;
   fullFontListLoaded = true;
   fontRefreshDone = true;
-  if (added) fontOptions = sortFontOptions(fontOptions);
   saveFontCache();
   // 首读完成时也要通知（下拉正开着搜索，需要用全量字体重算匹配）
   if (added || firstLoad) document.dispatchEvent(new Event('fj-fonts-updated'));
   return added;
+}
+
+// 手动“重新读取系统字体”：先试主世界 API，再试后台，最后用主世界探针脚本；
+// 拿到名单后整表替换，这样新装的字体出现、卸掉的字体消失
+function refreshFontList(onDone) {
+  fontReplacePending = true;
+  const finish = (list, source) => {
+    if (!list || !list.length) return false;
+    fontReplacePending = false;
+    mergeFonts(list, true);
+    if (onDone) onDone(fontOptions.length, source);
+    return true;
+  };
+  const fallback = () => {
+    injectFontProbeScript();
+    if (onDone) onDone(-1, 'probe');
+  };
+  queryLocalFontsDirect().then(list => {
+    if (finish(list, 'api')) return;
+    try {
+      chrome.runtime.sendMessage({ action: 'GET_LOCAL_FONTS' }, (resp) => {
+        if (!chrome.runtime.lastError && resp && resp.success) registerFontAliases(resp.aliases);
+        if (!chrome.runtime.lastError && resp && resp.success && resp.fonts && finish(resp.fonts, 'bg')) return;
+        fallback();
+      });
+    } catch (e) {
+      fallback();
+    }
+  });
 }
 
 // 在 content script 里直接调用（依赖用户手势，浏览器才会弹授权框）
@@ -1075,10 +1128,19 @@ function queryLocalFontsDirect() {
     return window.queryLocalFonts().then(faces => {
       // 以 family 为准：同一家族的多字重只留一条
       const set = new Set();
+      const aliases = {};
       (faces || []).forEach(f => {
         const name = f && (f.family || f.fullName);
-        if (name) set.add(String(name).trim());
+        if (!name) return;
+        const key = String(name).trim();
+        set.add(key);
+        const extra = (f.fullName && String(f.fullName).trim() !== key) ? String(f.fullName).trim() : '';
+        if (extra) {
+          aliases[key] = aliases[key] || [];
+          if (!aliases[key].includes(extra)) aliases[key].push(extra);
+        }
       });
+      registerFontAliases(aliases);
       return Array.from(set);
     }).catch(err => {
       console.warn('[fonts] 直接读取失败:', err && err.name, err && err.message);
@@ -1108,6 +1170,7 @@ function requestLocalFonts(force) {
           injectFontProbeScript();
           return;
         }
+        if (resp && resp.success) registerFontAliases(resp.aliases);
         if (resp && resp.success && mergeFonts(resp.fonts)) return;
         injectFontProbeScript();
       });
@@ -1147,7 +1210,9 @@ function bindLocalFontMessages() {
   fontMessageBound = true;
   window.addEventListener('message', (e) => {
     if (!e.data || e.data.type !== 'FJ_LOCAL_FONTS') return;
-    mergeFonts(e.data.fonts);
+    registerFontAliases(e.data.aliases);
+    mergeFonts(e.data.fonts, fontReplacePending);
+    fontReplacePending = false;
   });
 }
 
@@ -2808,6 +2873,18 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       const renderFontPanel = (filter, useFilter) => {
         if (!fontPanel) return;
         const q = useFilter ? String(filter || '').trim().toLowerCase() : '';
+        // 归一化搜索词与字体名：忽略空格/连字符/下划线/中点，"qiji" 也能命中 "QIJI-Sans SC"
+        const norm = (s) => String(s || '').toLowerCase().replace(/[\s\-_·・.]+/g, '');
+        const qn = norm(q);
+        const matchName = (n) => {
+          if (!q) return true;
+          const names = [n].concat(fontAliases[n] || []);
+          for (const name of names) {
+            if (String(name).toLowerCase().includes(q)) return true;
+            if (qn && norm(name).includes(qn)) return true;
+          }
+          return false;
+        };
         fontQuery = q;   // 记住当前搜索，后续缩放/字体补全重绘要沿用
         // 只在“已生效的字体”没被探测到时才补进列表；
         // 不能用输入框内容（那是搜索词，输入 boya 就会凭空多出一条叫 boya 的字体）
@@ -2815,11 +2892,11 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         let baseList = fontOptions.slice();
         if (current && !baseList.includes(current)) baseList.unshift(current);
         // 分组顺序：收藏 → 最近使用 → 全部
-        const favList = favoriteFonts.filter(n => !q || n.toLowerCase().includes(q));
-        const recent = recentFonts.filter(n => !favList.includes(n) && (!q || n.toLowerCase().includes(q)));
+        const favList = favoriteFonts.filter(n => matchName(n));
+        const recent = recentFonts.filter(n => !favList.includes(n) && matchName(n));
         let groups;
         if (q) {
-          const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n) && n.toLowerCase().includes(q));
+          const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n) && matchName(n));
           groups = [{ label: '', list: favList.concat(recent, others) }];
         } else {
           const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n));
@@ -3084,13 +3161,12 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         fontRefreshBtn.onclick = () => {
           localFontsRequested = true;
           fontRefreshDone = false;       // 手动刷新：允许重新实读一次
-          queryLocalFontsDirect().then(fonts => {
-            if (fonts && fonts.length) {
-              mergeFonts(fonts);
-              showToast(`已读取 ${fontOptions.length} 个字体`, 1500);
-            } else if (!fontOptions.length) {
-              fontOptions = sortFontOptions(detectLocalFonts());
-              showToast('未获得字体授权，使用内置候选列表', 2000);
+          showToast('正在重新读取系统字体…', 1200);
+          refreshFontList((count, source) => {
+            if (count > 0) {
+              showToast(`已读取 ${count} 个字体`, 1600);
+            } else if (source === 'probe') {
+              showToast('已发起读取，列表刷新后会自动补全', 2000);
             } else {
               showToast('未获得字体授权，沿用已缓存的字体列表', 2000);
             }

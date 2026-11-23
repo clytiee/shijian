@@ -81,20 +81,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return window.queryLocalFonts().then(faces => {
               // 以 family 为准：同一家族的多字重只留一条
               const set = new Set();
+              // 附带别名（fullName 等），供 content 搜索时一起匹配
+              const aliases = {};
               (faces || []).forEach(f => {
                 const name = f && (f.family || f.fullName);
-                if (name) set.add(String(name).trim());
+                if (!name) return;
+                const key = String(name).trim();
+                set.add(key);
+                const extra = (f.fullName && String(f.fullName).trim() !== key) ? String(f.fullName).trim() : '';
+                if (extra) {
+                  aliases[key] = aliases[key] || [];
+                  if (!aliases[key].includes(extra)) aliases[key].push(extra);
+                }
               });
-              return { supported: true, fonts: Array.from(set).sort(), error: null };
+              return { supported: true, fonts: Array.from(set).sort(), aliases, error: null };
             }).catch(err => ({
               supported: true,
               fonts: [],
+              aliases: {},
               error: String((err && err.name) || err)
             }));
           }
         });
         const r = (results && results[0] && results[0].result) || {};
-        sendResponse({ success: true, supported: r.supported !== false, fonts: r.fonts || [], error: r.error });
+        sendResponse({ success: true, supported: r.supported !== false, fonts: r.fonts || [], aliases: r.aliases || {}, error: r.error });
       } catch (e) {
         sendResponse({ success: false, fonts: [], error: e.message });
       }
