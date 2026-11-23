@@ -508,6 +508,72 @@ async function printImage(panelElement, contentElement, titleValue) {
 }
 
 //下载图片函数
+// ========== 2. 下载图片：把预览里的每一页（与打印同源的 .fj-page）整张渲染成 PNG ==========
+// 旧的 captureAndDownload 用 captureVisibleTab 截当前视口，内容高于屏幕就会被截断，这里改为按页渲染
+function renderElementToCanvas(element, scale = 2) {
+  return new Promise((resolve, reject) => {
+    try {
+      const css = Array.from(document.querySelectorAll('style'))
+        .filter(s => s.id === 'fj-anim-style')
+        .map(s => s.textContent)
+        .join('\n');
+      const w = Math.ceil(element.scrollWidth);
+      const h = Math.ceil(element.scrollHeight);
+      const clone = element.cloneNode(true);
+      clone.style.cssText = (clone.style.cssText || '') + ';margin:0;padding:0;background:#fff;';
+
+      const xml = new XMLSerializer().serializeToString(clone);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><foreignObject x="0" y="0" width="${w}" height="${h}"><div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;margin:0;padding:0;background:#fff;"><style><![CDATA[
+${css}
+.fj-page,.print-page{box-shadow:none !important;}
+]]></style>${xml}</div></foreignObject></svg>`;
+
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.setTransform(scale, 0, 0, scale, 0, 0);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas);
+      };
+      img.onerror = () => reject(new Error('页面渲染失败'));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function downloadCanvas(canvas, titleValue, suffix = '') {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+  let safeTitle = (titleValue || '').replace(/[\\/:*?"<>|]/g, '-').trim();
+  if (safeTitle.length > 30) safeTitle = safeTitle.substring(0, 30);
+  if (!safeTitle) safeTitle = '无标题';
+  const link = document.createElement('a');
+  link.download = `${safeTitle}${suffix}-${timestamp}.png`;
+  link.href = canvas.toDataURL('image/png', 1.0);
+  link.click();
+}
+
+// 返回 true 表示已成功导出；false 时调用方回退到旧的截图方案
+async function downloadPagesImage(pagesElement, titleValue) {
+  try {
+    if (!pagesElement || !pagesElement.querySelector('.fj-page')) return false;
+    showToast('🖼 正在生成图片…', 1200);
+    const canvas = await renderElementToCanvas(pagesElement, 2);
+    downloadCanvas(canvas, titleValue);
+    showToast('✅ 图片已保存', 1500);
+    return true;
+  } catch (e) {
+    console.warn('[图片] 分页渲染失败，回退到截图方案：', e);
+    return false;
+  }
+}
+
 async function captureAndDownload(panelElement, contentElement, titleValue) {
   try {
     const originalScrollX = window.scrollX;
@@ -2733,7 +2799,11 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     console.log('[DEBUG] 打印 - 重新获取的 checkbox 状态:', shouldAutoClose);
     console.log('[DEBUG] 打印 - checkbox 元素:', checkbox);
 
-    await captureAndDownload(panel, contentArea, titleValue);
+    // 优先按“一页一页的真纸张”整张渲染，内容多页也不会被屏幕截断
+    const done = await downloadPagesImage(pagesWrap, titleValue);
+    if (!done) {
+      await captureAndDownload(panel, contentArea, titleValue);
+    }
 
     // 检查是否需要自动关闭
     const autoCloseCheckbox = document.getElementById('fj-auto-close');
