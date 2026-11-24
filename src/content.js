@@ -1984,6 +1984,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   function renderPreviewPages() {
     if (!pagesWrap) return;
     const { pages, pageWmm, pageHmm, MARGIN_MM } = computePages();
+    // 标题右侧显示总页数
+    const pageCountEl = document.getElementById('fj-page-count');
+    if (pageCountEl) pageCountEl.textContent = pages.length ? `共 ${pages.length} 页` : '';
     if (!pages.length) { pagesWrap.innerHTML = ''; return; }
     const innerHmm = pageHmm - MARGIN_MM * 2;
     // 开版框时，正文带上下各让出 padY，文字被限制在带宽内，框再往外扩 padY
@@ -2469,7 +2472,15 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 左栏放纸张预览，右栏放编辑区
   previewCol.appendChild(contentArea);
-  previewCol.appendChild(pagesWrap);
+  // 页数标签 + 预览页放进一个纵向容器：标签 sticky 在滚动区右上角，负下边距让它不占位
+  const previewStack = document.createElement('div');
+  previewStack.style.cssText = 'display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0;';
+  const pageCountChip = document.createElement('div');
+  pageCountChip.id = 'fj-page-count';
+  pageCountChip.style.cssText = 'position: sticky; top: 10px; align-self: flex-end; margin-right: 10px; margin-bottom: -24px; z-index: 20; padding: 2px 6px; border-radius: 2px; font-size: 11px; line-height: 1.5; font-family: system-ui, sans-serif; color: #f1f5f9; background: rgba(100, 116, 139, 0.55); pointer-events: none; white-space: nowrap;';
+  previewStack.appendChild(pageCountChip);
+  previewStack.appendChild(pagesWrap);
+  previewCol.appendChild(previewStack);
   sidebar.appendChild(sideHeader);
   sidebar.appendChild(toolbar);
   sidebar.appendChild(layoutToolbar);
@@ -2940,10 +2951,14 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         fontPreviewTip.style.left = '0px';
         fontPreviewTip.style.top = '-9999px';
         fontPreviewTip.style.display = 'block';
-        // 3 倍字号可能比屏幕还宽：按可用宽度等比缩回去，保证整句都在视口里
-        const sampleEl = fontPreviewTip.querySelector('.fj-tip-sample');
+        const r = anchorEl.getBoundingClientRect();
         const vw = window.innerWidth;
-        const avail = vw - 16 - 36;   // 左右各 8px 余量 + 浮层内边距
+        const vh = window.innerHeight;
+        // 字多时最多左移两个字：先按这个左边界算可用宽度，再缩字号把整句装进去
+        const maxShift = baseSize * 2;
+        const targetLeft = Math.max(8, r.left - maxShift);
+        const avail = vw - 8 - targetLeft - 36;   // 右侧 8px 余量 + 浮层内边距
+        const sampleEl = fontPreviewTip.querySelector('.fj-tip-sample');
         let size = baseSize;
         // 反复校准：字体宽度估不准时可能一次缩不够
         for (let i = 0; i < 3; i++) {
@@ -2952,14 +2967,12 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           size = Math.max(14, Math.floor(size * (avail / natural)));
           sampleEl.style.fontSize = size + 'px';
         }
-        const r = anchorEl.getBoundingClientRect();
         const w = fontPreviewTip.offsetWidth;
         const h = fontPreviewTip.offsetHeight;
-        const vh = window.innerHeight;
-        // 字多时浮层向左让：右边缘不越过视口，左侧保留 8px 余量
-        let left = r.left;
-        if (left + w > vw - 8) left = Math.min(r.right - w, vw - w - 8);
-        if (left < 8) left = 8;
+        // 需要缩字号（或本来就放不下）时，才按“两个字”的量往左让；否则保持对齐行首
+        const needShift = w > (vw - 8 - r.left - 36);
+        let left = needShift ? targetLeft : r.left;
+        if (left + w > vw - 8) left = Math.max(8, vw - 8 - w);
         // 优先显示在行的下方，下面放不下就翻到上方，再不行贴住行
         let top = r.bottom + 8;
         if (top + h > vh - 8) top = r.top - h - 8;
