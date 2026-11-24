@@ -992,11 +992,70 @@ const WINDOWS_EN_FONTS = [
   'Yu Gothic', 'Book Antiqua', 'Bookman Old Style', 'Century Gothic'
 ];
 
+// 随 Microsoft Office 一起安装的西文字体（Windows 本身没有，办公装机才有）
+const OFFICE_EN_FONTS = [
+  'Agency FB', 'Algerian', 'Arial Rounded MT Bold', 'Baskerville Old Face', 'Bauhaus 93',
+  'Bell MT', 'Berlin Sans FB', 'Bernard MT Condensed', 'Blackadder ITC', 'Bodoni MT',
+  'Britannic Bold', 'Broadway', 'Brush Script MT', 'Californian FB', 'Calisto MT',
+  'Castellar', 'Centaur', 'Century', 'Century Schoolbook', 'Colonna MT', 'Cooper Black',
+  'Copperplate Gothic Bold', 'Copperplate Gothic Light', 'Curlz MT', 'Elephant',
+  'Engravers MT', 'Eras Bold ITC', 'Eras Light ITC', 'Felix Titling', 'Footlight MT Light',
+  'Forte', 'Franklin Gothic Book', 'Franklin Gothic Demi', 'Franklin Gothic Heavy',
+  'Freestyle Script', 'French Script MT', 'Gigi', 'Gill Sans MT', 'Gill Sans Ultra Bold',
+  'Gloucester MT Extra Condensed', 'Goudy Old Style', 'Goudy Stout', 'Haettenschweiler',
+  'Harlow Solid Italic', 'Harvest', 'High Tower Text', 'Imprint MT Shadow', 'Informal Roman',
+  'Jokerman', 'Juice ITC', 'Kristen ITC', 'Kunstler Script', 'Lucida Bright', 'Lucida Calligraphy',
+  'Lucida Fax', 'Lucida Handwriting', 'Lucida Sans', 'Lucida Sans Typewriter', 'Magneto',
+  'Maiandra GD', 'Matura MT Script Capitals', 'Modern No. 20', 'Monotype Corsiva', 'MT Extra',
+  'Niagara Engraved', 'Niagara Solid', 'OCR A', 'OCR B', 'Old English Text MT', 'Onyx',
+  'Palace Script MT', 'Papyrus', 'Parchment', 'Perpetua', 'Playbill', 'Poor Richard',
+  'Pristina', 'Rage Italic', 'Ravie', 'Rockwell', 'Rockwell Extra Bold', 'Script MT Bold',
+  'Showcard Gothic', 'Snap ITC', 'Stencil', 'Tempus Sans ITC', 'Viner Hand ITC', 'Vivaldi',
+  'Vladimir Script', 'Wide Latin', 'Wingdings 2', 'Wingdings 3'
+];
+
+// macOS 自带与设计软件（Adobe / Corel 等）常见的西文字体：同样归入“英文字体”
+// 只收常见一批，避免名单过宽把用户自己想用的字也藏起来
+const DESIGN_EN_FONTS = [
+  'Didot', 'Baskerville', 'Futura', 'Helvetica', 'Helvetica Neue', 'Optima', 'Hoefler Text',
+  'Gill Sans', 'Avenir', 'Avenir Next', 'Athelas', 'Charter', 'Cochin', 'Seravek',
+  'Superclarendon', 'Iowan Old Style', 'Marion', 'American Typewriter', 'Apple Chancery',
+  'Bodoni 72', 'Chalkboard', 'Chalkduster', 'Trattatello', 'Snell Roundhand', 'Phosphate',
+  'Herculanum', 'Krungthep', 'Lucida Grande', 'Marker Felt', 'Menlo', 'Monaco', 'Skia',
+  'Zapf Dingbats', 'Zapfino', 'DIN', 'Adobe Garamond', 'Garamond', 'Garamond Premier',
+  'Minion', 'Myriad', 'Trajan', 'Bembo', 'Caslon', 'Adobe Caslon', 'Utopia', 'Frutiger',
+  'Univers', 'Futura PT', 'Neue Haas Grotesk', 'Proxima Nova', 'Gotham', 'Brandon Grotesque',
+  'Avenir LT', 'Source Sans', 'Open Sans', 'Roboto', 'Lato', 'Montserrat', 'Poppins'
+];
+
+// 系统自带 + Office + macOS/设计软件带来的西文字体，统一视为“英文字体”
+const LATIN_BUNDLED_FONTS = WINDOWS_EN_FONTS.concat(OFFICE_EN_FONTS, DESIGN_EN_FONTS);
+
+// 名称是否落在这个西文名单里：
+// 1) 完全相等；2) 字体名以名单名开头（Arial Bold → Arial）；
+// 3) 名单名以字体名开头且后面是分隔符（"Bernard MT" ↔ "Bernard MT Condensed"），
+//    这样系统里只报出缩写家族名的情况也能识别
+function matchLatinListed(name, list) {
+  const lower = String(name || '').toLowerCase().trim();
+  if (!lower) return false;
+  return list.some((en) => {
+    const e = en.toLowerCase();
+    if (lower === e || lower.startsWith(e)) return true;
+    if (!e.startsWith(lower)) return false;
+    const next = e.charAt(lower.length);
+    return next === '' || next === ' ' || next === '-' || next === '_' || next === '.';
+  });
+}
+
+function isWindowsEnFont(name) {
+  return matchLatinListed(name, LATIN_BUNDLED_FONTS);
+}
+
 function sortFontOptions(list) {
   const tier1Order = new Map();
   TIER1_FONTS.forEach((name, i) => tier1Order.set(name.toLowerCase(), i));
   const winEnOrder = new Map();
-  WINDOWS_EN_FONTS.forEach((name, i) => winEnOrder.set(name.toLowerCase(), i));
+  LATIN_BUNDLED_FONTS.forEach((name, i) => winEnOrder.set(name.toLowerCase(), i));
 
   const rank = (name) => {
     const lower = name.toLowerCase();
@@ -1007,6 +1066,10 @@ function sortFontOptions(list) {
     if (winEnOrder.has(lower)) return { tier: 4, order: winEnOrder.get(lower) };
     for (const [en, order] of winEnOrder) {
       if (lower.startsWith(en)) return { tier: 4, order };
+      if (en.startsWith(lower)) {
+        const next = en.charAt(lower.length);
+        if (next === '' || next === ' ' || next === '-' || next === '_' || next === '.') return { tier: 4, order };
+      }
     }
     if (FOUNDRY_PREFIXES.some(p => lower.startsWith(p.toLowerCase()) || name.startsWith(p))) {
       return { tier: 2, order: 0 };
@@ -1184,6 +1247,7 @@ let fontOptions = [];
 let recentFonts = [];   // 最近使用过的字体（下拉里排最前）
 let favoriteFonts = []; // 收藏的字体（排在最前）
 let fontPanelScale = 1; // 字体下拉被拉大时，里面文字同步放大
+let showWindowsEnFonts = false; // “英文字体”：默认不显示 Windows 自带西文字体
 
 // 启动时先吃磁盘缓存：上次读到的全量字体立刻可用于搜索
 try { loadFontCache(); } catch (e) {}
@@ -2859,7 +2923,76 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       let fontPicked = false;     // 本次下拉是否真正选了字体
       let fontQuery = '';         // 当前搜索词（缩放/字体补全重绘时不能把它丢掉）
 
+      // 悬浮字体预览时弹出 3 倍放大的浮层
+      let fontPreviewTip = null;
+      const hideFontPreview = () => {
+        if (fontPreviewTip) fontPreviewTip.style.display = 'none';
+      };
+      const showFontPreview = (name, sample, anchorEl) => {
+        if (!fontPreviewTip) {
+          fontPreviewTip = document.createElement('div');
+          fontPreviewTip.style.cssText = 'position: fixed; z-index: 2147483000; pointer-events: none; display: none; max-width: calc(100vw - 16px); box-sizing: border-box; background: #fffdf7; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18); padding: 14px 18px;';
+          document.body.appendChild(fontPreviewTip);
+        }
+        const baseSize = Math.round(17 * fontPanelScale * 3);   // 3 倍预览
+        const cssFont = `'${String(name).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}', serif`;
+        fontPreviewTip.innerHTML = `<div class="fj-tip-sample" style="font-family: ${cssFont}; font-size: ${baseSize}px; line-height: 1.35; color: #1e293b; white-space: nowrap;">${sample}</div><div style="margin-top: 6px; font-family: system-ui, sans-serif; font-size: 11px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${String(name).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`;
+        fontPreviewTip.style.left = '0px';
+        fontPreviewTip.style.top = '-9999px';
+        fontPreviewTip.style.display = 'block';
+        // 3 倍字号可能比屏幕还宽：按可用宽度等比缩回去，保证整句都在视口里
+        const sampleEl = fontPreviewTip.querySelector('.fj-tip-sample');
+        const vw = window.innerWidth;
+        const avail = vw - 16 - 36;   // 左右各 8px 余量 + 浮层内边距
+        let size = baseSize;
+        // 反复校准：字体宽度估不准时可能一次缩不够
+        for (let i = 0; i < 3; i++) {
+          const natural = sampleEl ? sampleEl.scrollWidth : 0;
+          if (!natural || natural <= avail) break;
+          size = Math.max(14, Math.floor(size * (avail / natural)));
+          sampleEl.style.fontSize = size + 'px';
+        }
+        const r = anchorEl.getBoundingClientRect();
+        const w = fontPreviewTip.offsetWidth;
+        const h = fontPreviewTip.offsetHeight;
+        const vh = window.innerHeight;
+        // 字多时浮层向左让：右边缘不越过视口，左侧保留 8px 余量
+        let left = r.left;
+        if (left + w > vw - 8) left = Math.min(r.right - w, vw - w - 8);
+        if (left < 8) left = 8;
+        // 优先显示在行的下方，下面放不下就翻到上方，再不行贴住行
+        let top = r.bottom + 8;
+        if (top + h > vh - 8) top = r.top - h - 8;
+        if (top < 8) top = Math.max(8, Math.min(vh - h - 8, r.top));
+        fontPreviewTip.style.left = left + 'px';
+        fontPreviewTip.style.top = top + 'px';
+      };
+
+      // 放大预览用的例句：取正文开头最多 16 字；若已包含一个以上的句读，
+      // 且最后一个句子被截断，就把这半句舍掉，只留完整的句子
+      const previewSample = () => {
+        const src = String((typeof window.editedText !== 'undefined' && window.editedText) || text || '')
+          .replace(/[\s\u3000]+/g, '');
+        if (!src) return fontSampleLine;
+        const LIMIT = 16;
+        let s = src.slice(0, LIMIT);
+        if (src.length > LIMIT) {
+          // 找到 s 里最后一个句读符号（，。；、：！？ 及半角）
+          const punct = /[，。；、：！？,.;:!?]/g;
+          let lastIdx = -1;
+          let m;
+          while ((m = punct.exec(s)) !== null) lastIdx = m.index;
+          // 只有前面至少还有一个句读（即截到了一句以上）才舍弃半句
+          if (lastIdx > 0 && lastIdx < s.length - 1) {
+            const earlier = s.slice(0, lastIdx).search(/[，。；、：！？,.;:!?]/);
+            if (earlier >= 0) s = s.slice(0, lastIdx + 1);
+          }
+        }
+        return s || fontSampleLine;
+      };
+
       const closeFontPanel = () => {
+        hideFontPreview();
         if (fontPanel) fontPanel.style.display = 'none';
         // 没选字体就把原值恢复回输入框
         if (!fontPicked && fontPrevValue !== null) {
@@ -2872,6 +3005,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
       const renderFontPanel = (filter, useFilter) => {
         if (!fontPanel) return;
+        hideFontPreview();
         const q = useFilter ? String(filter || '').trim().toLowerCase() : '';
         // 归一化搜索词与字体名：忽略空格/连字符/下划线/中点，"qiji" 也能命中 "QIJI-Sans SC"
         const norm = (s) => String(s || '').toLowerCase().replace(/[\s\-_·・.]+/g, '');
@@ -2894,20 +3028,23 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         // 分组顺序：收藏 → 最近使用 → 全部
         const favList = favoriteFonts.filter(n => matchName(n));
         const recent = recentFonts.filter(n => !favList.includes(n) && matchName(n));
+        // “英文字体”未勾选时，Windows 自带西文字体不在“全部字体”和搜索结果里出现
+        // （收藏 / 最近使用仍照常显示，用户自己挑过的不会被藏起来）
+        const visibleInAll = (n) => !(showWindowsEnFonts === false && isWindowsEnFont(n));
         let groups;
         if (q) {
-          const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n) && matchName(n));
+          const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n) && matchName(n) && visibleInAll(n));
           groups = [{ label: '', list: favList.concat(recent, others) }];
         } else {
-          const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n));
+          const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n) && visibleInAll(n));
           groups = [
             { label: '收藏', list: favList },
             { label: '最近使用', list: recent },
-            { label: '全部字体', list: others }
-          ].filter(g => g.list.length);
+            { label: '全部字体', list: others, withEnToggle: true }
+          ].filter(g => g.list.length || g.withEnToggle);
         }
         const s = fontPanelScale;              // 下拉被拉大时文字同步放大
-        const fSample = (15 * s).toFixed(1);
+        const fSample = (17 * s).toFixed(1);   // 预览字放大一点，行高仍按原来的固定像素，不撑高行
         const fName = (10 * s).toFixed(1);
         const fHead = (10 * s).toFixed(1);
         const fDel = (11 * s).toFixed(1);
@@ -2919,10 +3056,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         // 扁平化成条目：分组标题 + 字体项，滚动到底再追加渲染（几百个字体也不卡）
         const entries = [];
         groups.forEach((g) => {
-          if (g.label) entries.push({ type: 'head', label: g.label });
+          if (g.label) entries.push({ type: 'head', label: g.label, withEnToggle: !!g.withEnToggle });
           g.list.forEach(n => entries.push({ type: 'font', name: n }));
         });
-        if (!entries.some(e => e.type === 'font')) {
+        if (!entries.some(e => e.type === 'font') && !entries.some(e => e.type === 'head')) {
           if (!q) { closeFontPanel(); return; }
           // 搜不到时只显示提示，不要关掉面板（否则会把正在输入的搜索词一起清掉）
           fontPanel.innerHTML = `<div style="padding: 12px 10px; color: #94a3b8; font-size: 12px;">没有匹配「${q.replace(/&/g, '&amp;').replace(/</g, '&lt;')}」的字体</div>`;
@@ -2931,18 +3068,23 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           return;
         }
 
-        const headHtml = (label) => `<div style="padding: ${(4 * s).toFixed(1)}px ${padX}px ${(3 * s).toFixed(1)}px; font-size: ${fHead}px; color: #94a3b8; background: #f8fafc; border-top: 1px solid #eef2f7; border-bottom: 1px solid #eef2f7;">${label}</div>`;
+        const headHtml = (label, withEnToggle) => {
+          const enToggle = withEnToggle
+            ? `<label class="fj-en-toggle" title="显示 Windows 自带的西文字体" style="display: flex; align-items: center; gap: 4px; flex: 0 0 auto; cursor: pointer; color: #64748b; font-size: ${fHead}px;"><input type="checkbox" class="fj-en-chk"${showWindowsEnFonts ? ' checked' : ''} style="width: ${(11 * s).toFixed(1)}px; height: ${(11 * s).toFixed(1)}px; margin: 0; cursor: pointer;">英文字体</label>`
+            : '';
+          return `<div style="padding: ${(4 * s).toFixed(1)}px ${padX}px ${(3 * s).toFixed(1)}px; font-size: ${fHead}px; color: #94a3b8; background: #f8fafc; border-top: 1px solid #eef2f7; border-bottom: 1px solid #eef2f7; display: flex; align-items: center; justify-content: space-between; gap: 8px;"><span>${label}</span>${enToggle}</div>`;
+        };
         const itemHtml = (n) => {
           const cssName = "'" + String(n).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
           const isFav = favoriteFonts.includes(n);
           const isRecent = recentFonts.includes(n);
-          const star = `<span class="fj-fav" data-font="${esc(n)}" title="${isFav ? '取消收藏' : '收藏'}" style="flex: 0 0 auto; padding: 0 4px; font-size: ${fStar}px; line-height: 1; cursor: pointer; color: ${isFav ? '#d97706' : '#94a3b8'}; opacity: ${isFav ? 1 : 0}; transition: opacity .12s;">${isFav ? '★' : '☆'}</span>`;
+          const star = `<span class="fj-fav" data-font="${esc(n)}" title="${isFav ? '取消收藏' : '收藏'}" style="flex: 0 0 auto; padding: 0 4px; font-size: ${fStar}px; line-height: 1; cursor: pointer; color: ${isFav ? '#d97706' : '#94a3b8'}; display: ${isFav ? 'inline-block' : 'none'};">${isFav ? '★' : '☆'}</span>`;
           const delBtn = isRecent
             ? `<span class="fj-recent-del" data-font="${esc(n)}" title="从最近使用中移除" style="flex: 0 0 auto; padding: 0 4px; color: #94a3b8; font-size: ${fDel}px; cursor: pointer;">✕</span>`
             : '';
           return `<div class="fj-font-item" data-font="${esc(n)}" style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: ${padY}px ${padX}px; cursor: pointer; white-space: nowrap; overflow: hidden;">
             <span style="flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px;">
-              <span style="flex: 0 0 auto; font-family: ${cssName}; font-size: ${fSample}px; line-height: 1.3; color: #1e293b; white-space: nowrap;">${fontSampleLine}</span>
+              <span class="fj-font-sample" data-font="${esc(n)}" style="flex: 0 0 auto; font-family: ${cssName}; font-size: ${fSample}px; line-height: ${(19.5 * s).toFixed(1)}px; color: #1e293b; white-space: nowrap;">${fontSampleLine}</span>
               <span title="${esc(n)}" style="flex: 1 1 auto; min-width: 0; font-family: system-ui, sans-serif; font-size: ${fName}px; line-height: 1.3; color: #94a3b8; white-space: nowrap; overflow: hidden;">${n}</span>
             </span>${star}${delBtn}</div>`;
         };
@@ -2951,12 +3093,12 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           root.querySelectorAll('.fj-font-item').forEach(el => {
             el.addEventListener('mouseenter', () => {
               el.style.background = '#eef2f7';
-              el.querySelectorAll('.fj-fav').forEach(f => { f.style.opacity = '1'; });
-            });
-            el.addEventListener('mouseleave', () => {
+              // 收藏图标只在悬浮时占位显示，平时把位置让给字体名称
+              el.querySelectorAll('.fj-fav').forEach(f => { f.style.display = 'inline-block'; });
+            });            el.addEventListener('mouseleave', () => {
               el.style.background = '';
               el.querySelectorAll('.fj-fav').forEach(f => {
-                if (!favoriteFonts.includes(f.dataset.font)) f.style.opacity = '0';
+                if (!favoriteFonts.includes(f.dataset.font)) f.style.display = 'none';
               });
             });
             el.addEventListener('mousedown', (ev) => {
@@ -2968,6 +3110,12 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
               applyFontFamily(name);
               closeFontPanel();
             });
+          });
+          // 悬浮字体预览：右侧弹一个 3 倍放大的浮层
+          root.querySelectorAll('.fj-font-sample').forEach(sp => {
+            sp.addEventListener('mouseenter', () => showFontPreview(sp.dataset.font, previewSample(), sp));
+            sp.addEventListener('mouseleave', hideFontPreview);
+            sp.addEventListener('mousedown', hideFontPreview);
           });
           // 收藏星标：切换收藏状态（收藏的字体排到最前）
           root.querySelectorAll('.fj-fav').forEach(btn => {
@@ -2995,6 +3143,16 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
               renderFontPanel(q, !!q);
             });
           });
+          // “全部字体”行末的英文字体开关：勾选后 Windows 自带西文字体才参与显示
+          root.querySelectorAll('.fj-en-chk').forEach(chk => {
+            chk.addEventListener('change', (ev) => {
+              ev.stopPropagation();
+              showWindowsEnFonts = !!chk.checked;
+              try { chrome.storage.local.set({ showWindowsEnFonts }); } catch (e) {}
+              renderFontPanel(q, !!q);
+            });
+            chk.addEventListener('mousedown', (ev) => ev.stopPropagation());
+          });
         };
 
         let renderedCount = 0;
@@ -3004,7 +3162,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           const chunk = entries.slice(renderedCount, renderedCount + CHUNK);
           renderedCount += chunk.length;
           const tmp = document.createElement('div');
-          tmp.innerHTML = chunk.map(e => e.type === 'head' ? headHtml(e.label) : itemHtml(e.name)).join('');
+          tmp.innerHTML = chunk.map(e => e.type === 'head' ? headHtml(e.label, e.withEnToggle) : itemHtml(e.name)).join('');
           bindChunk(tmp);
           while (tmp.firstChild) fontPanel.appendChild(tmp.firstChild);
           // 一屏还没填满就继续追加
@@ -3026,6 +3184,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         fontPanel.style.display = 'block';
         renderMore();
         fontPanel.onscroll = () => {
+          hideFontPreview();
           if (fontPanel.scrollTop + fontPanel.clientHeight >= fontPanel.scrollHeight - 240) renderMore();
         };
       };
@@ -3132,9 +3291,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       }
       // 记住上次选择的字体 + 最近使用过的字体
       try {
-        chrome.storage.local.get(['fontFamily', 'recentFonts', 'favoriteFonts'], (r) => {
+        chrome.storage.local.get(['fontFamily', 'recentFonts', 'favoriteFonts', 'showWindowsEnFonts'], (r) => {
           if (r && Array.isArray(r.recentFonts)) recentFonts = r.recentFonts.slice(0, 8);
           if (r && Array.isArray(r.favoriteFonts)) favoriteFonts = r.favoriteFonts.slice(0, 30);
+          if (r && typeof r.showWindowsEnFonts === 'boolean') showWindowsEnFonts = r.showWindowsEnFonts;
           const saved = r && r.fontFamily;
           if (saved) {
             fontFamilyInput.value = saved;
