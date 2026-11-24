@@ -1339,6 +1339,9 @@ function getMaxColumnsPerPage(paperSize) {
 }
 
 function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
+  // 每次打开面板都从本次抓取的正文开始，清掉上一次页面的编辑/自动排版结果
+  window.editedText = null;
+
   // 纸张大小变量
   let currentPaperSize = 'A5'; // 默认 A5
   let maxCharsPerColumn = 37; // A5 默认每列 37 字
