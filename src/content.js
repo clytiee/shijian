@@ -2243,9 +2243,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       //const chars = para.trim().split('');
       //console.log('[DEBUG] chars:', chars, 'length:', chars.length);
       //const maxChars = 37;
-      if (para === '') {
+      if (para.trim() === '') {
           columnCount = 1;
-          contentHtml += `<div class="vertical-paragraph"></div>`;
+          // 空白行：用全角空格撑出一个完整宽度的空列（空 div 宽度为 0，翻页时会被丢掉）
+          contentHtml += `<div class="vertical-paragraph">　</div>`;
       }else {
           const colTexts = sliceColumnText(para, maxChars);
           columnCount = colTexts.length;
@@ -2317,7 +2318,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
    * 清理正文中的括号及其内容
    */
   function cleanBracketsAndContent() {
-    let currentText = windowEditedText || text;
+    // 优先取正文输入框里的最新内容（含已应用的标点替换），避免回退到原始文本
+    const bodyEl = document.getElementById('fj-body-text');
+    let currentText = (bodyEl && bodyEl.value) ? bodyEl.value : (window.editedText || windowEditedText || text);
     
     if (!currentText || currentText.trim() === '') {
       showToast('⚠️ 没有可清理的内容', 1500);
@@ -2368,6 +2371,12 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     
     // 重新渲染
     renderVerticalContent(cleanedText, false);
+
+    // 同步到正文输入框（点「清括号」即时生效，无需再点应用）
+    if (bodyEl) {
+      bodyEl.value = cleanedText;
+      bodyEl.dispatchEvent(new Event('input'));
+    }
     
     showToast(`🧽 已清理 ${removedCount} 处括号，移除 ${removedChars} 个字符`, 2000);
   }
@@ -2386,6 +2395,8 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       <span class="fj-card-title" style="flex: 1 1 auto;">正文</span>
       <div style="display: flex; gap: 6px;">
         <button id="fj-body-max" style="height: 22px; width: 22px; padding: 0; font-size: 12px; line-height: 1;" title="最大化编辑">⤢</button>
+        <button id="fj-auto-split" style="height: 22px; width: 22px; padding: 0; font-size: 12px; line-height: 1;" title="自动分段：句号、叹号、问号后断行（每句一列）">¶</button>
+        <button id="fj-vertical-punct" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;" title="把标点换成竖排（古籍）用法：书名号→「」、引号→「」『』、半角→全角">竖排标点</button>
         <button id="fj-clean-brackets" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;" title="清理括号及其内容">清括号</button>
         <button id="fj-cancel-edit" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;">还原</button>
       </div>
@@ -3465,6 +3476,32 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         cleanBracketsAndContent();
       });
     }
+    // 自动分段：句末标点后断行
+    const autoSplitBtn = document.getElementById('fj-auto-split');
+    if (autoSplitBtn) {
+      autoSplitBtn.addEventListener('click', () => {
+        const el = document.getElementById('fj-body-text');
+        if (!el) return;
+        const res = autoSplitParagraphs(el.value);
+        if (!res.added) { showToast('已经是每句一段了', 1500); return; }
+        el.value = res.text;
+        if (typeof applyBodyText === 'function') applyBodyText();
+        showToast(`已分成 ${res.added} 段`, 1500);
+      });
+    }
+
+    // 标点替换：把正文里的标点换成竖排（古籍）用法，改完直接刷新预览    const verticalPunctBtn = document.getElementById('fj-vertical-punct');
+    if (verticalPunctBtn) {
+      verticalPunctBtn.addEventListener('click', () => {
+        const el = document.getElementById('fj-body-text');
+        if (!el) return;
+        const res = toVerticalPunctuation(el.value);
+        if (!res.changed) { showToast('标点已经是竖排用法，无需替换', 1500); return; }
+        el.value = res.text;
+        if (typeof applyBodyText === 'function') applyBodyText();
+        showToast(`已替换 ${res.changed} 处标点`, 1500);
+      });
+    }
   }, 100);
 
   // 关闭和复制功能
@@ -3537,6 +3574,58 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
 function escapeHtml(str) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// 自动分段：在句末标点（。！？）后断行，若句末跟着收尾引号/括号，标点断在其后
+// 已有换行不受影响，不新增空行（换行即一列，古籍竖排习惯每句一列）
+function autoSplitParagraphs(src) {
+  let s = String(src || '').replace(/\r\n?/g, '\n');
+  let added = 0;
+  s = s.replace(/([。！？]+[」』）】︾〉”’"']*)([^\n])/g, (m, punct, next) => {
+    added++;
+    return punct + '\n' + next;
+  });
+  return { text: s, added };
+}
+
+// 把标点换成竖排（古籍）写法：
+// 逗号保留顿号语义（逗号仍是逗号，只把半角转全角），双引号 → 「」（配对开关），
+// 单引号 → 『』，书名号 → 竖排专用 ︽︾，其余半角标点转全角，英文小数点不动
+function toVerticalPunctuation(src) {
+  let s = String(src || '');
+  let changed = 0;
+
+  // 半角逗号 → 全角逗号（数字之间的 1,000 不动）
+  s = s.replace(/,/g, (m, off, str) => {
+    const prev = str.charAt(off - 1);
+    const next = str.charAt(off + 1);
+    if (/[0-9]/.test(prev) && /[0-9]/.test(next)) return m;
+    changed++;
+    return '，';
+  });
+
+  // 半角句号：紧跟在汉字后面的当句号；数字/英文后（3.14、file.txt）保留
+  s = s.replace(/([\u4e00-\u9fa5」』）])\./g, (m, prev) => { changed++; return prev + '。'; });
+
+  // 书名号 → 引号（竖排古籍常用「」标举篇名，与正文引号统一）
+  s = s.replace(/《/g, () => { changed++; return '「'; });
+  s = s.replace(/》/g, () => { changed++; return '」'; });
+
+  // 成对双引号：「 」 交替；中文弯引号直接映射
+  let open = true;
+  s = s.replace(/"/g, () => { changed++; const ch = open ? '「' : '」'; open = !open; return ch; });
+  s = s.replace(/“/g, () => { changed++; return '「'; });
+  s = s.replace(/”/g, () => { changed++; return '」'; });
+
+  // 单引号（弯引号）：『 』
+  let openSingle = true;
+  s = s.replace(/[‘’]/g, () => { changed++; const ch = openSingle ? '『' : '』'; openSingle = !openSingle; return ch; });
+
+  // 其余半角标点转全角
+  const map = { ';': '；', ':': '：', '!': '！', '?': '？', '(': '（', ')': '）' };
+  s = s.replace(/[;:!?()]/g, (m) => { changed++; return map[m]; });
+
+  return { text: s, changed };
 }
 
 function showToast(msg, duration = 2000) {
