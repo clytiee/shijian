@@ -698,8 +698,8 @@ let currentAntiqueFrame = false;
 const FRAME_GAP_MM = 2.6;    // 列间距，须与分页时的 GAP_MM 一致
 const FRAME_PAD_X_MM = 2.6;  // 版框左右留白
 const FRAME_PAD_Y_MM = 4.0;  // 版框上下留白
-const FRAME_INK = '#6b6357';        // 外框墨色（深一些）
-const FRAME_INK_THIN = '#958c7c';   // 内侧细线与界行
+const FRAME_INK = '#000';        // 外框墨色（深一些）
+const FRAME_INK_THIN = '#000';   // 内侧细线与界行
 const FRAME_INNER_INSET_PX = 5;     // 内侧细线相对外框的内缩距离
 
 // 阿拉伯数字转中文数字（用于页码）
