@@ -3183,10 +3183,97 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
       // 悬浮字体预览时弹出 3 倍放大的浮层
       let fontPreviewTip = null;
+      let fontPreviewHideTimer = null;
       const hideFontPreview = () => {
+        if (fontPreviewHideTimer) { clearTimeout(fontPreviewHideTimer); fontPreviewHideTimer = null; }
         if (fontPreviewTip) fontPreviewTip.style.display = 'none';
       };
+      // 鼠标从字体行移开时留一点缓冲，不要立刻消失
+      const scheduleFontPreviewHide = () => {
+        if (fontPreviewHideTimer) clearTimeout(fontPreviewHideTimer);
+        fontPreviewHideTimer = setTimeout(() => { fontPreviewHideTimer = null; hideFontPreview(); }, 700);
+      };
+
+      // 浮层显示时按 C 截图；即使焦点还在字体输入框，也拦下这一个 c，不把它打进输入框
+      document.addEventListener('keydown', (ev) => {
+        if (!fontPreviewTip || fontPreviewTip.style.display === 'none') return;
+        if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        if (String(ev.key || '').toLowerCase() !== 'c') return;
+        const t = ev.target;
+        const tag = (t && t.tagName || '').toLowerCase();
+        // 正文编辑区（textarea / contenteditable）里的 c 仍然当普通输入
+        if (tag === 'textarea' || (t && t.isContentEditable)) return;
+        const sampleEl = fontPreviewTip.querySelector('.fj-tip-sample');
+        const sampleText = sampleEl ? sampleEl.textContent : '';
+        const size = sampleEl ? (parseFloat(sampleEl.style.fontSize) || 0) : 0;
+        const fam = fontPreviewTip.dataset.family || '';
+        const full = fontPreviewTip.dataset.full || '';
+        if (!sampleText || !fam || !size) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        captureFontPreview(sampleText, fam, full, size);
+      });
+
+
+      const captureFontPreview = (sampleText, familyName, fullName, size) => {
+        const padX = 18;
+        const padY = 14;
+        const dpr = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
+        const metaFont = '11px system-ui, sans-serif';
+        const metaText = (fullName && fullName !== familyName) ? familyName + '　·　' + fullName : familyName;
+        const meas = document.createElement('canvas').getContext('2d');
+        meas.font = size + 'px "' + familyName + '", serif';
+        const sampleW = Math.ceil(meas.measureText(sampleText).width);
+        meas.font = metaFont;
+        const metaW = Math.ceil(meas.measureText(metaText).width);
+        const W = Math.max(sampleW, metaW, 120) + padX * 2 + 2;
+        const sampleH = Math.ceil(size * 1.35);
+        const metaH = Math.ceil(11 * 1.35);
+        const H = padY * 2 + sampleH + 6 + metaH + 2;
+        const cv = document.createElement('canvas');
+        cv.width = Math.round(W * dpr);
+        cv.height = Math.round(H * dpr);
+        const ctx = cv.getContext('2d');
+        ctx.scale(dpr, dpr);
+        ctx.fillStyle = '#fffdf7';
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.rect(0.5, 0.5, W - 1, H - 1);
+        ctx.fill();
+        ctx.stroke();
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#1e293b';
+        ctx.font = size + 'px "' + familyName + '", serif';
+        ctx.fillText(sampleText, padX, padY);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = metaFont;
+        ctx.fillText(metaText, padX, padY + sampleH + 6);
+        // 截图时不把右下角提示画进去
+        cv.toBlob((blob) => {
+          if (!blob) { showToast('截图失败', 1400); return; }
+          const fallbackDownload = () => {
+            try {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = 'font-preview.png';
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+              showToast('剪贴板不可用，已下载图片', 1600);
+            } catch (e) { showToast('截图失败', 1400); }
+          };
+          if (navigator.clipboard && window.ClipboardItem) {
+            navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+              .then(() => showToast('浮层截图已复制到剪贴板', 1400))
+              .catch(fallbackDownload);
+          } else {
+            fallbackDownload();
+          }
+        }, 'image/png');
+      };
       const showFontPreview = (name, sample, anchorEl) => {
+        // 取消上一行留下的延时隐藏，否则换行/重绘时会被旧计时器关掉
+        if (fontPreviewHideTimer) { clearTimeout(fontPreviewHideTimer); fontPreviewHideTimer = null; }
         if (!fontPreviewTip) {
           fontPreviewTip = document.createElement('div');
           fontPreviewTip.style.cssText = 'position: fixed; z-index: 2147483000; pointer-events: none; display: none; max-width: calc(100vw - 16px); box-sizing: border-box; background: #fffdf7; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18); padding: 14px 18px;';
@@ -3194,7 +3281,20 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         }
         const baseSize = Math.round(17 * fontPanelScale * 3);   // 3 倍预览
         const cssFont = `'${String(name).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}', serif`;
-        fontPreviewTip.innerHTML = `<div class="fj-tip-sample" style="font-family: ${cssFont}; font-size: ${baseSize}px; line-height: 1.35; color: #1e293b; white-space: nowrap;">${sample}</div><div style="margin-top: 6px; font-family: system-ui, sans-serif; font-size: 11px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${String(name).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</div>`;
+        // 浮层底下两行元信息：family 名（=下拉里的名字）+ fullName（有且不同时才显示）
+        const metaLine = 'margin-top: 6px; display: flex; align-items: baseline; gap: 8px; font-family: system-ui, sans-serif; font-size: 11px; color: #94a3b8; white-space: nowrap;';
+        const familyName = String(name || '');
+        const fullNames = (fontAliases && fontAliases[familyName]) || [];
+        const fullName = String(fullNames[0] || '');
+        const fullLine = (fullName && fullName !== familyName)
+          ? `　·　${escapeHtml(fullName)}`
+          : '';
+        // 提示文字跟第二行同一基线、右边缘与左内边距（18px）对齐
+        const hintHtml = '<span class="fj-tip-hint" style="margin-left: auto; flex: 0 0 auto; font-size: 10px; color: #64748b; letter-spacing: .5px; pointer-events: none;">按 C 截图</span>';
+        fontPreviewTip.innerHTML = `<div class="fj-tip-sample" style="font-family: ${cssFont}; font-size: ${baseSize}px; line-height: 1.35; color: #1e293b; white-space: nowrap;">${escapeHtml(sample)}</div><div style="${metaLine}"><span style="flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(familyName)}${fullLine}</span>${hintHtml}</div>`;
+        // 记住当前浮层用的数据，按 C 时取
+        fontPreviewTip.dataset.family = familyName;
+        fontPreviewTip.dataset.full = fullName;
         fontPreviewTip.style.left = '0px';
         fontPreviewTip.style.top = '-9999px';
         fontPreviewTip.style.display = 'block';
@@ -3381,7 +3481,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           // 悬浮字体预览：右侧弹一个 3 倍放大的浮层
           root.querySelectorAll('.fj-font-sample').forEach(sp => {
             sp.addEventListener('mouseenter', () => showFontPreview(sp.dataset.font, previewSample(), sp));
-            sp.addEventListener('mouseleave', hideFontPreview);
+            sp.addEventListener('mouseleave', scheduleFontPreviewHide);
             sp.addEventListener('mousedown', hideFontPreview);
           });
           // 收藏星标：切换收藏状态（收藏的字体排到最前）

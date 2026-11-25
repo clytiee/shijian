@@ -124,10 +124,10 @@
         const famForCss = String(r.family || r.fullName || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
         return (
         '<tr class="row">' +
-        '<td class="sample" style="font-family:\'' + famForCss + '\', serif;">' + esc(SAMPLE) + '</td>' +
-        '<td class="disp">' + esc(r.display) + '</td>' +
         '<td class="mono">' + esc(r.family) + '</td>' +
         '<td>' + esc(r.fullName) + '</td>' +
+        '<td class="disp">' + esc(r.display) + '</td>' +
+        '<td class="sample" style="font-family:\'' + famForCss + '\', serif;">' + esc(SAMPLE) + '</td>' +
         '<td class="mono ps">' + esc(r.postscriptName) + '</td>' +
         '<td class="sty">' + esc(r.style) + '</td>' +
         hanCell(r) +
