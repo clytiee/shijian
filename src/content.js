@@ -845,8 +845,9 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
   const noPosStyle = noOnRight
     ? `right:0;width:${noBandRPx}px;text-align:center;`
     : `left:0;width:${noBandLPx}px;text-align:center;`;
+  // 页码竖排（writing-mode: vertical-rl）：整串自下而上叠在版框外下方，字与字上下相接
   const pageNoHtml = (currentPageNumber && pageNo)
-    ? `<span class="fj-pageno" style="position:absolute;box-sizing:border-box;bottom:${noBottomPx}px;${noPosStyle}font-size:${noHpx}px;line-height:1;color:${FRAME_INK};font-family:'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','KaiTi','宋体',serif;letter-spacing:0.5px;white-space:nowrap;">${toChineseNumeral(pageNo)}</span>`
+    ? `<span class="fj-pageno" style="position:absolute;box-sizing:border-box;bottom:${noBottomPx}px;${noPosStyle}font-size:${noHpx}px;line-height:1;color:${FRAME_INK};font-family:'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','KaiTi','宋体',serif;letter-spacing:0;writing-mode:vertical-rl;text-orientation:upright;white-space:nowrap;">${toChineseNumeral(pageNo)}</span>`
     : '';
 
   return frameHtml + pageNoHtml;
