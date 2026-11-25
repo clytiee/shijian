@@ -879,7 +879,7 @@ function fjOuterEdgePath(x1, y1, x2, y2, amp, rand) {
 function fjRoughRule(x, yTop, yBottom, rand) {
   // 整条界行沿一条长波缓慢起伏（波长 140–300px、幅度 0.9–1.7px），
   // 段落内部再叠一点细微抖动，看起来是刻歪的长线而不是锯齿
-  const wavAmp = 0.9 + rand() * 0.8;
+  const wavAmp = 0.12 + rand() * 0.18;    // 长波幅度 0.12–0.3px：几乎笔直，只留一点手刻的不匀
   const period = 140 + rand() * 160;
   const phase = rand() * Math.PI * 2;
   const xAt = (yy) => x + Math.sin((yy / period) * Math.PI * 2 + phase) * wavAmp;
@@ -888,7 +888,7 @@ function fjRoughRule(x, yTop, yBottom, rand) {
     let py = a;
     while (py < b) {
       py = Math.min(b, py + 4);
-      d += `L${(xAt(py) + (rand() * 2 - 1) * 0.25).toFixed(2)} ${py.toFixed(2)}`;
+      d += `L${(xAt(py) + (rand() * 2 - 1) * 0.06).toFixed(2)} ${py.toFixed(2)}`;
     }
     return d;
   };
@@ -902,14 +902,14 @@ function fjRoughRule(x, yTop, yBottom, rand) {
     // 墨色以浓墨为主：约八成段落接近实黑，只有约一成略淡
     const op = rand() < 0.12 ? (0.42 + rand() * 0.16) : (0.78 + rand() * 0.17);
     out += `<path d="${mkSeg(y, end)}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="1" opacity="${op.toFixed(2)}" vector-effect="non-scaling-stroke"/>`;
-    // 段间留白：多数无缝或细缝；约两成留 3–10px 的空口；约 7% 留一截 12–30px 的长空白
+    // 段间留白：以无缝为主；约一成留 3–8px 的小空口；约 3.5% 留一截 12–45px 的长空白
     const g = rand();
-    if (g < 0.07) {
-      y = end + 12 + rand() * 18;
-    } else if (g < 0.28) {
-      y = end + 3 + rand() * 7;
-    } else if (g < 0.65) {
-      y = end + rand() * 1.5;
+    if (g < 0.035) {
+      y = end + 12 + rand() * 33;
+    } else if (g < 0.135) {
+      y = end + 3 + rand() * 5;
+    } else if (g < 0.5) {
+      y = end + rand() * 1.2;
     } else {
       y = end - 0.5;
     }
@@ -924,16 +924,17 @@ function buildRoughFrameInk(frameWpx, frameHpx, ruleXs, seed) {
   const inset = FRAME_INNER_INSET_PX;
   const x0 = 1, y0 = 1, x1 = frameWpx - 2, y1 = frameHpx - 2;
   const parts = [];
-  // [x1, y1, x2, y2, 弯曲幅度]：上下横框接近平直（0.7），左右竖框起伏明显（1.6），贴近木刻实物
+  // [x1, y1, x2, y2, 弯曲幅度, 是否可断]：上下横框接近平直且不断，只有左右竖框会断
   const outerEdges = [
-    [x0, y0, x1, y0, 0.7], [x0, y1, x1, y1, 0.7],
-    [x0, y0, x0, y1, 1.6], [x1, y0, x1, y1, 1.6]
+    [x0, y0, x1, y0, 0.7, false], [x0, y1, x1, y1, 0.7, false],
+    [x0, y0, x0, y1, 1.6, true], [x1, y0, x1, y1, 1.6, true]
   ];
   outerEdges.forEach((e) => {
     // 外框：只画一条实黑线（不叠淡灰线，否则会看到灰线和黑线错位重叠）；
     // 弯曲走长波长波，粗细按边随机 2.2–2.8px，做出木刻的厚薄不匀
     const w = (2.2 + rand() * 0.6).toFixed(2);
-    parts.push(`<path d="${fjOuterEdgePath(e[0], e[1], e[2], e[3], e[4], rand)}" fill="none" stroke="${FRAME_INK}" stroke-width="${w}" opacity="0.95" vector-effect="non-scaling-stroke"/>`);
+    const d = e[5] ? fjOuterEdgePath(e[0], e[1], e[2], e[3], e[4], rand) : fjWavePath(e[0], e[1], e[2], e[3], e[4], 4, rand);
+    parts.push(`<path d="${d}" fill="none" stroke="${FRAME_INK}" stroke-width="${w}" opacity="0.95" vector-effect="non-scaling-stroke"/>`);
   });
   const i0 = inset, i1 = frameWpx - inset, j0 = inset, j1 = frameHpx - inset;
   const innerEdges = [[i0, j0, i1, j0], [i0, j1, i1, j1], [i0, j0, i0, j1], [i1, j0, i1, j1]];
