@@ -727,6 +727,7 @@ function toChineseNumeral(n) {
 
 let currentPageNumber = false;
 let currentPageNumberMirror = false;   // 奇偶页对称：奇数页码在左、偶数页码在右
+let currentFrameFullPage = false;      // 版框「满页」：剩余宽度平摊给各列，框横向满版心
 const PN_COL_W_MM = 4.2;               // 页码所占的那一列宽度（用于对称时扣减页边距）
 
 // 页码落在哪一侧：未开对称时始终在左
@@ -780,7 +781,7 @@ function fillPageWidth(pageCols, innerWmm, gapMm) {
 // 用当前页的列位置生成版框：外框粗线 + 内侧细线，列与列之间画界行
 // 注意：绝对定位是相对 .fj-page/.print-page 的 padding box（即整张纸），所以偏移要加上页边距
 // 位置统一换算成整数 CSS px，避免 1px 细线落在半像素上发虚、看起来缺一条或粗细不一
-function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo, pageWmm) {
+function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo, pageWmm, colWmmOverride, slotCount) {
   if (!colsOfPage || !colsOfPage.length) return '';
   const showFrame = currentAntiqueFrame;
   if (!showFrame && !currentPageNumber) return '';
@@ -809,21 +810,38 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo, pageWmm) {
   const frameHpx = bandHpx;
   const frameTopPx = marginPx;                // 框顶 = 上页边距
 
-  // 每列的列距（列宽 + 界行间距，px）：优先用本页相邻两列的实测右偏移差
-  const colPitchPx = Math.round(last.widthPx + FRAME_GAP_MM * PX_PER_MM);
-  let pitchPx = colPitchPx;
-  if (colsOfPage.length >= 2) {
-    const prev = colsOfPage[colsOfPage.length - 2];
-    const d = Math.round((prev.rightMm - last.rightMm) * PX_PER_MM);
-    if (d > 4) pitchPx = d;
-  }
-
-  // 版框宽度 = 已用列 + 能整列放下的空白列；剩下不足一列宽的部分不画窄列，
-  // 直接把版框左线收在那里（这部分留白落在框外，不会出现“最后一列太窄”）
+  // 「满页」模式：列宽由调用方按 (版心宽 − 列距) / 总列数 重新算过（总列数含空白列），
+  // 版框横向满版心，界行按新的等宽列距画，不留窄列
+  const overrideWmm = Number(colWmmOverride) || 0;
   const innerWpx = pageWpx - marginLPx - marginRPx;
-  const blankAvailPx = Math.max(0, innerWpx - blockWpx);
-  const blankCols = (pitchPx > 4) ? Math.floor((blankAvailPx + 2) / pitchPx) : 0;
-  const frameWpx = blockWpx + blankCols * pitchPx + padXPx * 2 - ruleShiftPx;
+  const gapPx = FRAME_GAP_MM * PX_PER_MM;
+  const slotsOfFull = Math.max(1, Math.round(Number(slotCount) || colsOfPage.length));
+  const fullMode = overrideWmm > 0 && colsOfPage.length > 0;
+  let frameWpx = 0;
+  let fullPitchPx = 0;
+  let blankCols = 0;
+  let pitchPx = 0;
+
+  if (fullMode) {
+    frameWpx = innerWpx + padXPx * 2 - ruleShiftPx;
+    // 列距 = (版心宽 + 列间距) / 总列数：这样 slots 列正好充满版心，左边缘与框内线齐
+    fullPitchPx = (innerWpx + gapPx) / slotsOfFull;
+  } else {
+    // 每列的列距（列宽 + 界行间距，px）：优先用本页相邻两列的实测右偏移差
+    const colPitchPx = Math.round(last.widthPx + FRAME_GAP_MM * PX_PER_MM);
+    pitchPx = colPitchPx;
+    if (colsOfPage.length >= 2) {
+      const prev = colsOfPage[colsOfPage.length - 2];
+      const d = Math.round((prev.rightMm - last.rightMm) * PX_PER_MM);
+      if (d > 4) pitchPx = d;
+    }
+
+    // 版框宽度 = 已用列 + 能整列放下的空白列；剩下不足一列宽的部分不画窄列，
+    // 直接把版框左线收在那里（这部分留白落在框外，不会出现“最后一列太窄”）
+    const blankAvailPx = Math.max(0, innerWpx - blockWpx);
+    blankCols = (pitchPx > 4) ? Math.floor((blankAvailPx + 2) / pitchPx) : 0;
+    frameWpx = blockWpx + blankCols * pitchPx + padXPx * 2 - ruleShiftPx;
+  }
 
   let rulesHtml = '';
   if (showFrame) {
@@ -833,19 +851,29 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo, pageWmm) {
       // 界行只在内线之内，不越出双线框内线
       return `<line x1="${xLeft}" y1="${FRAME_INNER_INSET_PX}" x2="${xLeft}" y2="${frameHpx - FRAME_INNER_INSET_PX}" stroke="${FRAME_INK_THIN}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
     };
-    rulesHtml = colsOfPage.slice(0, -1).map((col) => {
-      // 界行偏移相对版框：列左边缘 + 半个列间距 + 左右留白；再换到 SVG 的左侧坐标系
-      const xpx = Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
-      return mkRule(xpx);
-    }).join('');
-    // 空白列按整列宽补齐：最左文字列左边界那条界行必须画，之后每隔一个列距一条，
-    // 数量与版框宽度算出的 blankCols 一致，正好收到框内左线
-    const xOfRule = (col) => Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
-    const lastX = xOfRule(last);
-    if (pitchPx > 4) {
-      const xs = [lastX];
-      for (let k = 1; k < blankCols; k++) xs.push(lastX + pitchPx * k);
-      rulesHtml += xs.map(mkRule).join('');
+    if (fullMode) {
+      // 按新的等宽列距逐条画：第 i 条界行在 (i 列距 − 半个列距) 处；总列数含空白列
+      const n = slotsOfFull;
+      let s = '';
+      for (let i = 1; i < n; i++) {
+        s += mkRule(Math.round(padXPx + i * fullPitchPx - gapPx / 2 - ruleShiftPx));
+      }
+      rulesHtml = s;
+    } else {
+      rulesHtml = colsOfPage.slice(0, -1).map((col) => {
+        // 界行偏移相对版框：列左边缘 + 半个列间距 + 左右留白；再换到 SVG 的左侧坐标系
+        const xpx = Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
+        return mkRule(xpx);
+      }).join('');
+      // 空白列按整列宽补齐：最左文字列左边界那条界行必须画，之后每隔一个列距一条，
+      // 数量与版框宽度算出的 blankCols 一致，正好收到框内左线
+      const xOfRule = (col) => Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
+      const lastX = xOfRule(last);
+      if (pitchPx > 4) {
+        const xs = [lastX];
+        for (let k = 1; k < blankCols; k++) xs.push(lastX + pitchPx * k);
+        rulesHtml += xs.map(mkRule).join('');
+      }
     }
   }
 
@@ -903,6 +931,7 @@ function buildPageModel(columnEls, opts) {
     const text = el.textContent || '';
     const base = {
       widthPx: rect.width,
+      naturalWidthPx: rect.width,   // 版面设定的列宽（未被“铺满版心”拉伸过）
       heightPx: rect.height,
       fontSize: cs.fontSize,
       fontWeight: cs.fontWeight,
@@ -1914,9 +1943,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       </div>
 
       <div style="display: flex; align-items: center; gap: 6px;">
-        <span class="fj-side-label">行距</span>
+        <span class="fj-side-label" title="竖排时行距即列宽">列宽</span>
         <button id="fj-lineheight-minus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">−</button>
-        <input id="fj-lineheight-val" type="text" inputmode="decimal" value="${currentLineHeight.toFixed(1)}" title="直接填写行距（1.0–3.0）" style="width: 38px; height: 22px; box-sizing: border-box; padding: 0 2px; text-align: center; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155;">
+        <input id="fj-lineheight-val" type="text" inputmode="decimal" value="${currentLineHeight.toFixed(1)}" title="直接填写列宽（1.0–3.0 倍字号）" style="width: 38px; height: 22px; box-sizing: border-box; padding: 0 2px; text-align: center; font-size: 12px; border: 1px solid #cbd5e1; border-radius: 4px; background: #fff; color: #334155;">
         <button id="fj-lineheight-plus" style="width: 22px; height: 22px; padding: 0; font-size: 12px; line-height: 1;">+</button>
       </div>
 
@@ -1951,11 +1980,15 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       <span class="fj-side-label">底纹</span>
       <label title="给纸张加上仿古籍的旧纸底纹（预览、打印、下载图片都会带上）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-antique-paper" style="margin: 0; cursor: pointer;">
-        <span>仿古籍纸</span>
+        <span>古纸</span>
       </label>
       <label title="加淡墨双线版框和界行（古籍刻本样式）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-antique-frame" style="margin: 0; cursor: pointer;">
         <span>版框</span>
+      </label>
+      <label title="版框横向满页：剩余宽度平摊给本页各列，列宽略大于版面设定的列宽" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-frame-fullpage" style="margin: 0; cursor: pointer;">
+        <span>满页</span>
       </label>
       <label title="在版心外侧标中文数字页码" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-page-number" style="margin: 0; cursor: pointer;">
@@ -1963,7 +1996,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       </label>
       <label title="奇偶页对称：奇数页页码在左、偶数页在右，有页码一侧的页边距减去半个页码列宽" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-page-number-mirror" style="margin: 0; cursor: pointer;">
-        <span>奇偶对称</span>
+        <span>对称</span>
       </label>
     </div>
   `;
@@ -1991,6 +2024,18 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       renderPreviewPages();
       try { chrome.storage.local.set({ antiqueFrame: currentAntiqueFrame }); } catch (e) {}
       showToast(currentAntiqueFrame ? '已加上古籍版框' : '已关闭版框', 1200);
+    });
+  }
+
+  // 「满页」开关：版框宽度撑满版心，剩余宽度平摊给本页各列
+  const frameFullToggle = layoutToolbar.querySelector('#fj-frame-fullpage');
+  if (frameFullToggle) {
+    frameFullToggle.checked = currentFrameFullPage;
+    frameFullToggle.addEventListener('change', () => {
+      currentFrameFullPage = frameFullToggle.checked;
+      renderPreviewPages();
+      try { chrome.storage.local.set({ frameFullPage: currentFrameFullPage }); } catch (e) {}
+      showToast(currentFrameFullPage ? '版框已改为满页' : '版框按整列收边', 1200);
     });
   }
   
@@ -2147,11 +2192,21 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     const bandHmm = innerHmm - framePadY * 2;
 
     pagesWrap.innerHTML = pages.map((colsOfPage, pageIndex) => {
-      const colsHtml = colsOfPage.map((col) => `
-        <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};letter-spacing:${col.letterSpacing || 'normal'};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
-      `).join('');
-      const frameHtml = buildPageFrame(colsOfPage, bandHmm, MARGIN_MM, pageIndex + 1, pageWmm);
       const pm = pageMargins(pageIndex + 1);
+      // 「满页」模式：按版面设定的列距算本页能放下的整列数（含左侧空白列），
+      // 不足一列的余量舍弃，剩余宽度按总列数平摊 → 列宽略大于设定值
+      const availWmm = pageWmm - pm.left - pm.right;
+      const baseWmm = (colsOfPage[0] && colsOfPage[0].naturalWidthPx)
+        ? colsOfPage[0].naturalWidthPx / PX_PER_MM
+        : (colsOfPage[0] ? colsOfPage[0].widthPx / PX_PER_MM : 0);
+      const pitchMm = baseWmm + 2.6;
+      let slots = pitchMm > 0 ? Math.floor((availWmm + 2.6) / pitchMm) : 0;
+      slots = Math.max(slots, colsOfPage.length, 1);
+      const effWmm = currentFrameFullPage ? (availWmm - 2.6 * (slots - 1)) / slots : 0;
+      const colsHtml = colsOfPage.map((col) => `
+        <div class="vcol" style="width:${(effWmm > 0 ? effWmm : col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};letter-spacing:${col.letterSpacing || 'normal'};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
+      `).join('');
+      const frameHtml = buildPageFrame(colsOfPage, bandHmm, MARGIN_MM, pageIndex + 1, pageWmm, effWmm, slots);
       return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM + framePadY}mm ${pm.right}mm ${MARGIN_MM + framePadY}mm ${pm.left}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
     }).join('');
     // 渲染完立即按真实位置校正框的上下边界（预览、打印、导图都吃这套内联样式）
@@ -2735,7 +2790,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 记住仿古纸底纹、版框、页码开关
   try {
-    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'pageNumber', 'pageNumberMirror'], (r) => {
+    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'frameFullPage', 'pageNumber', 'pageNumberMirror'], (r) => {
       let changed = false;
       const saved = r && r.antiquePaper;
       if (typeof saved === 'boolean' && saved !== currentAntiquePaper) {
@@ -2754,6 +2809,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       if (typeof savedPageNo === 'boolean' && savedPageNo !== currentPageNumber) {
         currentPageNumber = savedPageNo;
         if (pageNumberToggle) pageNumberToggle.checked = savedPageNo;
+        changed = true;
+      }
+      const savedFull = r && r.frameFullPage;
+      if (typeof savedFull === 'boolean' && savedFull !== currentFrameFullPage) {
+        currentFrameFullPage = savedFull;
+        const fullEl = layoutToolbar.querySelector('#fj-frame-fullpage');
+        if (fullEl) fullEl.checked = savedFull;
         changed = true;
       }
       const savedMirror = r && r.pageNumberMirror;
