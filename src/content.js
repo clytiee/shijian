@@ -144,12 +144,15 @@ function onClickHandler(event) {
       const lines = extractedText.split(/\n/).filter(line => line.trim() !== '');
       if (lines.length >= 2) {
         title = lines[0].trim();
-        //超长的当作正文，而不是副标题
+        // 第二行短（≤20 字）才当朝代/作者，超长的归入正文，不能丢
+        let bodyFrom = 1;
         if (lines[1].length <= 20) {
           subtitle = lines[1].trim();
+          bodyFrom = 2;
+        } else {
+          subtitle = '';
         }
-        // 正文去掉前两行
-        const bodyText = lines.slice(2).join('\n');
+        const bodyText = lines.slice(bodyFrom).join('\n');
         showA5FloatingPanel(bodyText, title, subtitle);
       } else if (lines.length === 1) {
         title = lines[0].trim();
