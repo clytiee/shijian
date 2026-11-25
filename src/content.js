@@ -780,7 +780,7 @@ function fillPageWidth(pageCols, innerWmm, gapMm) {
 // 用当前页的列位置生成版框：外框粗线 + 内侧细线，列与列之间画界行
 // 注意：绝对定位是相对 .fj-page/.print-page 的 padding box（即整张纸），所以偏移要加上页边距
 // 位置统一换算成整数 CSS px，避免 1px 细线落在半像素上发虚、看起来缺一条或粗细不一
-function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
+function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo, pageWmm) {
   if (!colsOfPage || !colsOfPage.length) return '';
   const showFrame = currentAntiqueFrame;
   if (!showFrame && !currentPageNumber) return '';
@@ -790,7 +790,7 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
   const padY = FRAME_PAD_Y_MM;
   const last = colsOfPage[colsOfPage.length - 1];
   const blockWpx = Math.round((last.rightMm + last.widthPx / PX_PER_MM) * PX_PER_MM);
-  const blockHpx = Math.round(Math.max(...colsOfPage.map(c => c.heightPx || 0)));
+  const pageWpx = Math.round((Number(pageWmm) || 0) * PX_PER_MM);
   // 传进来的 innerHmm 是“文字带”高度（已扣掉上下留白 padY）
   const innerHpx = Math.round(innerHmm * PX_PER_MM);
   const paperHpx = Math.round((innerHmm + padY * 2 + margin * 2) * PX_PER_MM);
@@ -801,28 +801,52 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo) {
   const padYPx = Math.round(padY * PX_PER_MM);
   // 竖排文字在列里天然靠右，界行位置再往右挪一点，让每列左右留白接近
   const ruleShiftPx = Math.round(0.9 * PX_PER_MM);
-  // 文字带在页面里居中：带顶 = 页边距 + padY，框再往外扩 padY
-  const topPx = Math.max(0, marginPx + Math.round((innerHpx - blockHpx) / 2) - padYPx);
   const rightPx = marginRPx - padXPx;
 
-  // 版框不越出版心：内容满页时框也停在页边距内，保证纸张上下留白
-  const bandHpx = innerHpx + padYPx * 2;      // 框允许占用的最大高度（正文带 + 上下留白）
-  let frameHpx = blockHpx + padYPx * 2;
-  let frameTopPx = topPx;
-  if (frameHpx > bandHpx) frameHpx = bandHpx;
-  frameTopPx = Math.max(marginPx, Math.min(frameTopPx, marginPx + bandHpx - frameHpx));
+  // 版框高度固定占满整条正文带（正文带 + 上下留白），不再随文字多少伸缩：
+  // 每段都很短时框也保持满页高度，不会缩成一小截
+  const bandHpx = innerHpx + padYPx * 2;      // 框占用的高度
+  const frameHpx = bandHpx;
+  const frameTopPx = marginPx;                // 框顶 = 上页边距
 
-  const frameWpx = blockWpx + padXPx * 2 - ruleShiftPx;
+  // 每列的列距（列宽 + 界行间距，px）：优先用本页相邻两列的实测右偏移差
+  const colPitchPx = Math.round(last.widthPx + FRAME_GAP_MM * PX_PER_MM);
+  let pitchPx = colPitchPx;
+  if (colsOfPage.length >= 2) {
+    const prev = colsOfPage[colsOfPage.length - 2];
+    const d = Math.round((prev.rightMm - last.rightMm) * PX_PER_MM);
+    if (d > 4) pitchPx = d;
+  }
+
+  // 版框宽度 = 已用列 + 能整列放下的空白列；剩下不足一列宽的部分不画窄列，
+  // 直接把版框左线收在那里（这部分留白落在框外，不会出现“最后一列太窄”）
+  const innerWpx = pageWpx - marginLPx - marginRPx;
+  const blankAvailPx = Math.max(0, innerWpx - blockWpx);
+  const blankCols = (pitchPx > 4) ? Math.floor((blankAvailPx + 2) / pitchPx) : 0;
+  const frameWpx = blockWpx + blankCols * pitchPx + padXPx * 2 - ruleShiftPx;
 
   let rulesHtml = '';
   if (showFrame) {
+    const mkRule = (xpx) => {
+      const xLeft = frameWpx - 2 - xpx;
+      if (xLeft <= FRAME_INNER_INSET_PX + 0.5) return '';
+      // 界行只在内线之内，不越出双线框内线
+      return `<line x1="${xLeft}" y1="${FRAME_INNER_INSET_PX}" x2="${xLeft}" y2="${frameHpx - FRAME_INNER_INSET_PX}" stroke="${FRAME_INK_THIN}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+    };
     rulesHtml = colsOfPage.slice(0, -1).map((col) => {
       // 界行偏移相对版框：列左边缘 + 半个列间距 + 左右留白；再换到 SVG 的左侧坐标系
       const xpx = Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
-      const xLeft = frameWpx - 2 - xpx;
-      // 界行只在内线之内，不越出双线框内线
-      return `<line x1="${xLeft}" y1="${FRAME_INNER_INSET_PX}" x2="${xLeft}" y2="${frameHpx - FRAME_INNER_INSET_PX}" stroke="${FRAME_INK_THIN}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+      return mkRule(xpx);
     }).join('');
+    // 空白列按整列宽补齐：最左文字列左边界那条界行必须画，之后每隔一个列距一条，
+    // 数量与版框宽度算出的 blankCols 一致，正好收到框内左线
+    const xOfRule = (col) => Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
+    const lastX = xOfRule(last);
+    if (pitchPx > 4) {
+      const xs = [lastX];
+      for (let k = 1; k < blankCols; k++) xs.push(lastX + pitchPx * k);
+      rulesHtml += xs.map(mkRule).join('');
+    }
   }
 
   // 版框用 SVG：双线 + 界行都是矢量，任何 DPI 下都不会发虚；
@@ -2090,41 +2114,22 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     return buildPageModel(contentArea.querySelectorAll('.vertical-paragraph'), { paperSize: currentPaperSize, orientation: layoutMode, marginMm: currentMarginMm });
   }
 
-  // 用 DOM 真实位置校正版框上下位置：
-  // 分页模型里的列高是按测量估出来的，和真实渲染可能差几毫米，
-  // 一旦框比文字高，框顶会被页边距卡住，看起来就像“框顶贴着字”。
-  // 这里在渲染完成后按实际列块顶/底重新摆框，保证框内上下留白始终是 FRAME_PAD_Y_MM。
+  // 用 DOM 真实位置校正版框：框始终占满正文带（不随文字多少伸缩），
+  // 这里只按页面实际内边距把框顶和高度对齐到页边距内，避免和纸张/文字错位
   function syncFrameGeometry() {
     if (!pagesWrap || !currentAntiqueFrame) return;
     const padYPx = Math.round(FRAME_PAD_Y_MM * PX_PER_MM);
     Array.from(pagesWrap.querySelectorAll('.fj-page')).forEach((pageEl) => {
       const frame = pageEl.querySelector('.fj-frame');
-      const cols = pageEl.querySelector('.fj-cols');
-      if (!frame || !cols) return;
+      if (!frame) return;
       const cs = getComputedStyle(pageEl);
       const padTop = parseFloat(cs.paddingTop) || 0;
       const padBottom = parseFloat(cs.paddingBottom) || 0;
-      // 正文带高度（page 的内边距已含 padY，带内就是纯文字可用高度）
       const bandInnerH = pageEl.clientHeight - padTop - padBottom;
       if (bandInnerH <= 0) return;
-      // offsetTop 是相对 .fj-page 边框盒的，和 frame 的绝对定位同一坐标原点
-      const colsTop = cols.offsetTop;
-      let textTop = colsTop;
-      let textBottom = colsTop;
-      Array.from(cols.children).forEach((c) => {
-        if (!c.offsetHeight) return;
-        textTop = Math.min(textTop, colsTop + c.offsetTop);
-        textBottom = Math.max(textBottom, colsTop + c.offsetTop + c.offsetHeight);
-      });
-      if (textBottom <= textTop) { textTop = colsTop; textBottom = colsTop + cols.offsetHeight; }
-      const blockH = textBottom - textTop;
-      // 框 = 文字块 + 上下各 padY；允许占用的最大高度 = 正文带 + 2*padY
-      const maxH = bandInnerH + padYPx * 2;
-      const bandMin = Math.max(0, padTop - padYPx);   // = 页边距
-      const gap = Math.max(0, Math.min(padYPx, (maxH - blockH) / 2));
-      let h = Math.min(maxH, blockH + gap * 2);
-      let top = Math.max(bandMin, Math.min(textTop - gap, bandMin + maxH - h));
-      frame.style.top = Math.round(top) + 'px';
+      const bandMin = Math.max(0, padTop - padYPx);   // = 上页边距
+      const h = bandInnerH + padYPx * 2;
+      frame.style.top = Math.round(bandMin) + 'px';
       frame.style.height = Math.round(h) + 'px';
     });
   }
@@ -2145,7 +2150,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       const colsHtml = colsOfPage.map((col) => `
         <div class="vcol" style="width:${(col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};letter-spacing:${col.letterSpacing || 'normal'};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
       `).join('');
-      const frameHtml = buildPageFrame(colsOfPage, bandHmm, MARGIN_MM, pageIndex + 1);
+      const frameHtml = buildPageFrame(colsOfPage, bandHmm, MARGIN_MM, pageIndex + 1, pageWmm);
       const pm = pageMargins(pageIndex + 1);
       return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM + framePadY}mm ${pm.right}mm ${MARGIN_MM + framePadY}mm ${pm.left}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
     }).join('');
@@ -3484,19 +3489,24 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
             sp.addEventListener('mouseleave', scheduleFontPreviewHide);
             sp.addEventListener('mousedown', hideFontPreview);
           });
-          // 收藏星标：切换收藏状态（收藏的字体排到最前）
+          // 收藏星标：切换收藏状态。只在原地更新星号，不重绘列表——避免刚收藏的字体立刻跳到「收藏」组最上面
           root.querySelectorAll('.fj-fav').forEach(btn => {
             btn.addEventListener('mousedown', (ev) => {
               ev.preventDefault();
               ev.stopPropagation();
               const name = btn.dataset.font;
-              if (favoriteFonts.includes(name)) {
+              const nowFav = !favoriteFonts.includes(name);
+              if (!nowFav) {
                 favoriteFonts = favoriteFonts.filter(n => n !== name);
               } else {
                 favoriteFonts = [name].concat(favoriteFonts.filter(n => n !== name)).slice(0, 30);
               }
               try { chrome.storage.local.set({ favoriteFonts }); } catch (e) {}
-              renderFontPanel(q, !!q);
+              btn.textContent = nowFav ? '★' : '☆';
+              btn.style.color = nowFav ? '#d97706' : '#94a3b8';
+              btn.style.display = 'inline-block';
+              btn.title = nowFav ? '取消收藏' : '收藏';
+              showToast(nowFav ? '已收藏（下次打开下拉置顶）' : '已取消收藏', 1200);
             });
           });
           // 最近使用项右侧叉号：仅从“最近使用”里移除，不影响当前字体
