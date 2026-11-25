@@ -63,6 +63,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; // 保持消息通道开放，等待异步响应
   }
 
+  if (request.action === 'OPEN_FONT_PAGE') {
+    // 由后台建标签页：网页里直接 window.open(chrome-extension://…) 会被 Chrome 拦成 ERR_BLOCKED_BY_CLIENT
+    chrome.tabs.create({ url: chrome.runtime.getURL('fontpage.html') })
+      .then((t) => sendResponse({ success: true, tabId: t && t.id }))
+      .catch((e) => sendResponse({ success: false, error: e && e.message }));
+    return true;
+  }
+
   if (request.action === 'GET_LOCAL_FONTS') {
     (async () => {
       try {
@@ -94,7 +102,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                   if (!aliases[key].includes(extra)) aliases[key].push(extra);
                 }
               });
-              return { supported: true, fonts: Array.from(set).sort(), aliases, error: null };
+              // 原始元数据（family / fullName / postscriptName / style），供“全部字体”页展示
+              const meta = (faces || []).map(f => ({
+                family: String(f.family || '').trim(),
+                fullName: String(f.fullName || '').trim(),
+                postscriptName: String(f.postscriptName || '').trim(),
+                style: String(f.style || '').trim()
+              })).filter(f => f.family || f.fullName);
+              return { supported: true, fonts: Array.from(set).sort(), aliases, faces: meta, error: null };
             }).catch(err => ({
               supported: true,
               fonts: [],
@@ -104,7 +119,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           }
         });
         const r = (results && results[0] && results[0].result) || {};
-        sendResponse({ success: true, supported: r.supported !== false, fonts: r.fonts || [], aliases: r.aliases || {}, error: r.error });
+        sendResponse({ success: true, supported: r.supported !== false, fonts: r.fonts || [], aliases: r.aliases || {}, faces: r.faces || [], error: r.error });
       } catch (e) {
         sendResponse({ success: false, fonts: [], error: e.message });
       }
