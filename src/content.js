@@ -703,7 +703,7 @@ const FRAME_PAD_X_MM = 2.6;  // 版框左右留白
 const FRAME_PAD_Y_MM = 4.0;  // 版框上下留白
 const FRAME_INK = '#000';        // 外框墨色（深一些）
 const FRAME_INK_THIN = '#000';   // 内侧细线与界行
-const FRAME_INNER_INSET_PX = 5;     // 内侧细线相对外框的内缩距离
+const FRAME_INNER_INSET_PX = 8;     // 内侧细线相对外框的内缩距离（≈2.1mm，做了旧也不会贴在一起）
 
 // 阿拉伯数字转中文数字（用于页码）
 function toChineseNumeral(n) {
@@ -728,6 +728,7 @@ function toChineseNumeral(n) {
 let currentPageNumber = false;
 let currentPageNumberMirror = false;   // 奇偶页对称：奇数页码在左、偶数页码在右
 let currentFrameFullPage = false;      // 版框「满页」：剩余宽度平摊给各列，框横向满版心
+let currentFrameRough = false;         // 版框「做旧」：线条加手工刻版式抖动、界行断续
 const PN_COL_W_MM = 4.2;               // 页码所占的那一列宽度（用于对称时扣减页边距）
 
 // 页码落在哪一侧：未开对称时始终在左
@@ -776,6 +777,171 @@ function fillPageWidth(pageCols, innerWmm, gapMm) {
     c.rightMm = acc / PX_PER_MM;
     acc += c.widthPx + gapMm * PX_PER_MM;
   });
+}
+
+// ========== 古籍刻本「做旧」线条 ==========
+// 确定性伪随机（mulberry32）：同一页每次渲染、打印、导出图片都得到同样的抖动，
+// 不会出现“每刷一次线就换位置”或“预览和打印不一样”
+function fjRoughRand(seed) {
+  let s = (Number(seed) || 1) >>> 0;
+  return function () {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// 沿直线取样，在法向上加抖动，模拟手工刻版画出的线不是笔直的
+function fjRoughLine(x1, y1, x2, y2, amp, rand) {
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  if (len < 2) return `M${x1} ${y1}L${x2} ${y2}`;
+  const nx = -(y2 - y1) / len;   // 法向单位向量
+  const ny = (x2 - x1) / len;
+  const step = 4;
+  const n = Math.max(2, Math.round(len / step));
+  let d = '';
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    const px = x1 + (x2 - x1) * t;
+    const py = y1 + (y2 - y1) * t;
+    const w = (i === 0 || i === n) ? 0 : (rand() * 2 - 1) * amp;
+    d += (i === 0 ? 'M' : 'L') + (px + nx * w).toFixed(2) + ' ' + (py + ny * w).toFixed(2);
+  }
+  return d;
+}
+
+// 低频起伏的长波：整条边只有几个控制点（长波长），用 Catmull-Rom 转贝塞尔平滑过渡，
+// 模拟木刻长边整体的轻微弯曲，而不是高频抖动
+function fjWavePath(x1, y1, x2, y2, amp, segs, rand) {
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  if (len < 2) return `M${x1} ${y1}L${x2} ${y2}`;
+  const nx = -(y2 - y1) / len;
+  const ny = (x2 - x1) / len;
+  const n = Math.max(2, segs);
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;
+    // 两端钉死，中间按长波起伏（偏正弦的随机相位，避免看起来像折线）
+    const w = (i === 0 || i === n) ? 0 : amp * Math.sin((rand() * 0.8 + 0.6) * Math.PI * t + rand() * 2) - (rand() * 2 - 1) * amp * 0.3;
+    pts.push([x1 + (x2 - x1) * t + nx * w, y1 + (y2 - y1) * t + ny * w]);
+  }
+  let d = `M${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += `C${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2[0].toFixed(2)} ${p2[1].toFixed(2)}`;
+  }
+  return d;
+}
+
+// 外框一条边：仍是长波长波，但偶尔断开一小截（刻版漏墨）。
+// 断口 3–7px，每条边 0–2 处，概率控制在“少许”，不会变成虚线
+function fjOuterEdgePath(x1, y1, x2, y2, amp, rand) {
+  const len = Math.hypot(x2 - x1, y2 - y1);
+  if (len < 20) return fjWavePath(x1, y1, x2, y2, amp, 3, rand);
+  const r = rand();
+  const cuts = r < 0.16 ? 2 : (r < 0.6 ? 1 : 0);
+  const pos = [];
+  for (let i = 0; i < cuts; i++) pos.push(0.15 + rand() * 0.7);
+  pos.sort((a, b) => a - b);
+  const runs = [];
+  let start = 0;
+  pos.forEach((p) => {
+    const at = p * len;
+    const gap = 3 + rand() * 4;
+    runs.push([start, Math.max(start, at)]);
+    start = at + gap;
+  });
+  runs.push([start, len]);
+  return runs
+    .filter((seg) => seg[1] - seg[0] > 8)
+    .map(([a, b]) => {
+      const sx = x1 + (x2 - x1) * (a / len);
+      const sy = y1 + (y2 - y1) * (a / len);
+      const ex = x1 + (x2 - x1) * (b / len);
+      const ey = y1 + (y2 - y1) * (b / len);
+      const segs = Math.max(2, Math.round(((b - a) / len) * 4));
+      return fjWavePath(sx, sy, ex, ey, amp, segs, rand);
+    })
+    .join('');
+}
+
+// 竖界行：长段连续、墨色深浅不匀，只在段间接缝处偶有一点极短的断口
+// （刻版真实效果是“线基本连贯、个别地方淡掉”，所以不能切成等长短划，否则像虚线）
+function fjRoughRule(x, yTop, yBottom, rand) {
+  // 整条界行沿一条长波缓慢起伏（波长 140–300px、幅度 0.9–1.7px），
+  // 段落内部再叠一点细微抖动，看起来是刻歪的长线而不是锯齿
+  const wavAmp = 0.9 + rand() * 0.8;
+  const period = 140 + rand() * 160;
+  const phase = rand() * Math.PI * 2;
+  const xAt = (yy) => x + Math.sin((yy / period) * Math.PI * 2 + phase) * wavAmp;
+  const mkSeg = (a, b) => {
+    let d = `M${xAt(a).toFixed(2)} ${a.toFixed(2)}`;
+    let py = a;
+    while (py < b) {
+      py = Math.min(b, py + 4);
+      d += `L${(xAt(py) + (rand() * 2 - 1) * 0.25).toFixed(2)} ${py.toFixed(2)}`;
+    }
+    return d;
+  };
+
+  let out = '';
+  let y = yTop + rand() * 1.5;
+  while (y < yBottom - 1) {
+    let seg = 18 + rand() * 42;
+    let end = Math.min(yBottom, y + seg);
+    if (yBottom - end < 10) end = yBottom;            // 末尾不足一小段就直接补齐
+    // 墨色以浓墨为主：约八成段落接近实黑，只有约一成略淡
+    const op = rand() < 0.12 ? (0.42 + rand() * 0.16) : (0.78 + rand() * 0.17);
+    out += `<path d="${mkSeg(y, end)}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="1" opacity="${op.toFixed(2)}" vector-effect="non-scaling-stroke"/>`;
+    // 段间留白：多数无缝或细缝；约两成留 3–10px 的空口；约 7% 留一截 12–30px 的长空白
+    const g = rand();
+    if (g < 0.07) {
+      y = end + 12 + rand() * 18;
+    } else if (g < 0.28) {
+      y = end + 3 + rand() * 7;
+    } else if (g < 0.65) {
+      y = end + rand() * 1.5;
+    } else {
+      y = end - 0.5;
+    }
+  }
+  return out;
+}
+
+// 做旧版整块墨线：外框粗线微微弯、叠一层更抖的淡线模拟墨色浓淡；
+// 内框细线轻抖；界行断续
+function buildRoughFrameInk(frameWpx, frameHpx, ruleXs, seed) {
+  const rand = fjRoughRand(seed);
+  const inset = FRAME_INNER_INSET_PX;
+  const x0 = 1, y0 = 1, x1 = frameWpx - 2, y1 = frameHpx - 2;
+  const parts = [];
+  // [x1, y1, x2, y2, 弯曲幅度]：上下横框接近平直（0.7），左右竖框起伏明显（1.6），贴近木刻实物
+  const outerEdges = [
+    [x0, y0, x1, y0, 0.7], [x0, y1, x1, y1, 0.7],
+    [x0, y0, x0, y1, 1.6], [x1, y0, x1, y1, 1.6]
+  ];
+  outerEdges.forEach((e) => {
+    // 外框：只画一条实黑线（不叠淡灰线，否则会看到灰线和黑线错位重叠）；
+    // 弯曲走长波长波，粗细按边随机 2.2–2.8px，做出木刻的厚薄不匀
+    const w = (2.2 + rand() * 0.6).toFixed(2);
+    parts.push(`<path d="${fjOuterEdgePath(e[0], e[1], e[2], e[3], e[4], rand)}" fill="none" stroke="${FRAME_INK}" stroke-width="${w}" opacity="0.95" vector-effect="non-scaling-stroke"/>`);
+  });
+  const i0 = inset, i1 = frameWpx - inset, j0 = inset, j1 = frameHpx - inset;
+  const innerEdges = [[i0, j0, i1, j0], [i0, j1, i1, j1], [i0, j0, i0, j1], [i1, j0, i1, j1]];
+  innerEdges.forEach((e) => {
+    parts.push(`<path d="${fjRoughLine(e[0], e[1], e[2], e[3], 0.4, rand)}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="0.5" opacity="0.8" vector-effect="non-scaling-stroke"/>`);
+  });
+  ruleXs.forEach((x) => parts.push(fjRoughRule(x, j0 + 1, j1 - 1, rand)));
+  return parts.join('');
 }
 
 // 用当前页的列位置生成版框：外框粗线 + 内侧细线，列与列之间画界行
@@ -843,44 +1009,43 @@ function buildPageFrame(colsOfPage, innerHmm, marginMm, pageNo, pageWmm, colWmmO
     frameWpx = blockWpx + blankCols * pitchPx + padXPx * 2 - ruleShiftPx;
   }
 
-  let rulesHtml = '';
+  // 界行位置（相对版框右缘的 px），两种模式各自算出后再统一画
+  const ruleXs = [];
   if (showFrame) {
-    const mkRule = (xpx) => {
+    const pushRule = (xpx) => {
       const xLeft = frameWpx - 2 - xpx;
-      if (xLeft <= FRAME_INNER_INSET_PX + 0.5) return '';
       // 界行只在内线之内，不越出双线框内线
-      return `<line x1="${xLeft}" y1="${FRAME_INNER_INSET_PX}" x2="${xLeft}" y2="${frameHpx - FRAME_INNER_INSET_PX}" stroke="${FRAME_INK_THIN}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+      if (xLeft > FRAME_INNER_INSET_PX + 0.5) ruleXs.push(xLeft);
     };
     if (fullMode) {
-      // 按新的等宽列距逐条画：第 i 条界行在 (i 列距 − 半个列距) 处；总列数含空白列
-      const n = slotsOfFull;
-      let s = '';
-      for (let i = 1; i < n; i++) {
-        s += mkRule(Math.round(padXPx + i * fullPitchPx - gapPx / 2 - ruleShiftPx));
+      // 按新的等宽列距逐条画：第 i 条界行在 (i 列距 − 半列距) 处；总列数含空白列
+      for (let i = 1; i < slotsOfFull; i++) {
+        pushRule(Math.round(padXPx + i * fullPitchPx - gapPx / 2 - ruleShiftPx));
       }
-      rulesHtml = s;
     } else {
-      rulesHtml = colsOfPage.slice(0, -1).map((col) => {
-        // 界行偏移相对版框：列左边缘 + 半个列间距 + 左右留白；再换到 SVG 的左侧坐标系
-        const xpx = Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
-        return mkRule(xpx);
-      }).join('');
+      const xOfRule = (col) => Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
+      colsOfPage.slice(0, -1).forEach((col) => pushRule(xOfRule(col)));
       // 空白列按整列宽补齐：最左文字列左边界那条界行必须画，之后每隔一个列距一条，
       // 数量与版框宽度算出的 blankCols 一致，正好收到框内左线
-      const xOfRule = (col) => Math.round((col.rightMm + col.widthPx / PX_PER_MM + FRAME_GAP_MM / 2 + padX) * PX_PER_MM) - ruleShiftPx;
-      const lastX = xOfRule(last);
       if (pitchPx > 4) {
-        const xs = [lastX];
-        for (let k = 1; k < blankCols; k++) xs.push(lastX + pitchPx * k);
-        rulesHtml += xs.map(mkRule).join('');
+        const lastX = xOfRule(last);
+        for (let k = 0; k < blankCols; k++) pushRule(lastX + pitchPx * k);
       }
     }
   }
 
+  const mkRule = (xLeft) =>
+    `<line x1="${xLeft}" y1="${FRAME_INNER_INSET_PX}" x2="${xLeft}" y2="${frameHpx - FRAME_INNER_INSET_PX}" stroke="${FRAME_INK_THIN}" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+
   // 版框用 SVG：双线 + 界行都是矢量，任何 DPI 下都不会发虚；
   // vector-effect 保证 syncFrameGeometry 改高度时线宽仍是 2px / 0.5px，不会被拉粗拉细
+  // 「做旧」时改用带确定性抖动的 path（外粗线微微弯、内细线与界行断续），打印仍是矢量
+  const roughSeed = (Number(pageNo) || 1) * 1013 + Math.round(frameHpx);
+  const frameInk = currentFrameRough
+    ? buildRoughFrameInk(frameWpx, frameHpx, ruleXs, roughSeed)
+    : `<rect x="1" y="1" width="${frameWpx - 2}" height="${frameHpx - 2}" fill="none" stroke="${FRAME_INK}" stroke-width="2" vector-effect="non-scaling-stroke"/><rect x="${FRAME_INNER_INSET_PX}" y="${FRAME_INNER_INSET_PX}" width="${frameWpx - FRAME_INNER_INSET_PX * 2}" height="${frameHpx - FRAME_INNER_INSET_PX * 2}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="0.5" vector-effect="non-scaling-stroke"/>${ruleXs.map(mkRule).join('')}`;
   const frameHtml = showFrame
-    ? `<svg class="fj-frame" xmlns="http://www.w3.org/2000/svg" width="${frameWpx}" height="${frameHpx}" viewBox="0 0 ${frameWpx} ${frameHpx}" preserveAspectRatio="none" style="position:absolute;right:${rightPx}px;top:${frameTopPx}px;width:${frameWpx}px;height:${frameHpx}px;overflow:visible;pointer-events:none;"><rect x="1" y="1" width="${frameWpx - 2}" height="${frameHpx - 2}" fill="none" stroke="${FRAME_INK}" stroke-width="2" vector-effect="non-scaling-stroke"/><rect x="${FRAME_INNER_INSET_PX}" y="${FRAME_INNER_INSET_PX}" width="${frameWpx - FRAME_INNER_INSET_PX * 2}" height="${frameHpx - FRAME_INNER_INSET_PX * 2}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="0.5" vector-effect="non-scaling-stroke"/>${rulesHtml}</svg>`
+    ? `<svg class="fj-frame" xmlns="http://www.w3.org/2000/svg" width="${frameWpx}" height="${frameHpx}" viewBox="0 0 ${frameWpx} ${frameHpx}" preserveAspectRatio="none" style="position:absolute;right:${rightPx}px;top:${frameTopPx}px;width:${frameWpx}px;height:${frameHpx}px;overflow:visible;pointer-events:none;">${frameInk}</svg>`
     : '';
 
   // 页码：整体居中放在页码所在一侧的页边距里（左页取左页边距、右页取右页边距）
@@ -1980,23 +2145,27 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       <span class="fj-side-label">底纹</span>
       <label title="给纸张加上仿古籍的旧纸底纹（预览、打印、下载图片都会带上）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-antique-paper" style="margin: 0; cursor: pointer;">
-        <span>古纸</span>
+        <span>纸</span>
       </label>
       <label title="加淡墨双线版框和界行（古籍刻本样式）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-antique-frame" style="margin: 0; cursor: pointer;">
-        <span>版框</span>
+        <span>框</span>
       </label>
       <label title="版框横向满页：剩余宽度平摊给本页各列，列宽略大于版面设定的列宽" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-frame-fullpage" style="margin: 0; cursor: pointer;">
-        <span>满页</span>
+        <span>满</span>
+      </label>
+      <label title="模拟手刻版：外框粗线微微弯曲、墨色不均，内细线与界行断断续续（同一页每次渲染/打印都一致）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-frame-rough" style="margin: 0; cursor: pointer;">
+        <span>旧</span>
       </label>
       <label title="在版心外侧标中文数字页码" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-page-number" style="margin: 0; cursor: pointer;">
-        <span>页码</span>
+        <span>码</span>
       </label>
       <label title="奇偶页对称：奇数页页码在左、偶数页在右，有页码一侧的页边距减去半个页码列宽" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
         <input type="checkbox" id="fj-page-number-mirror" style="margin: 0; cursor: pointer;">
-        <span>对称</span>
+        <span>称</span>
       </label>
     </div>
   `;
@@ -2036,6 +2205,18 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       renderPreviewPages();
       try { chrome.storage.local.set({ frameFullPage: currentFrameFullPage }); } catch (e) {}
       showToast(currentFrameFullPage ? '版框已改为满页' : '版框按整列收边', 1200);
+    });
+  }
+
+  // 「做旧」开关：线条带手工刻版式抖动，界行断续
+  const frameRoughToggle = layoutToolbar.querySelector('#fj-frame-rough');
+  if (frameRoughToggle) {
+    frameRoughToggle.checked = currentFrameRough;
+    frameRoughToggle.addEventListener('change', () => {
+      currentFrameRough = frameRoughToggle.checked;
+      renderPreviewPages();
+      try { chrome.storage.local.set({ frameRough: currentFrameRough }); } catch (e) {}
+      showToast(currentFrameRough ? '版框已做旧' : '版框恢复规整线条', 1200);
     });
   }
   
@@ -2790,7 +2971,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 记住仿古纸底纹、版框、页码开关
   try {
-    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'frameFullPage', 'pageNumber', 'pageNumberMirror'], (r) => {
+    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'frameFullPage', 'frameRough', 'pageNumber', 'pageNumberMirror'], (r) => {
       let changed = false;
       const saved = r && r.antiquePaper;
       if (typeof saved === 'boolean' && saved !== currentAntiquePaper) {
@@ -2816,6 +2997,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         currentFrameFullPage = savedFull;
         const fullEl = layoutToolbar.querySelector('#fj-frame-fullpage');
         if (fullEl) fullEl.checked = savedFull;
+        changed = true;
+      }
+      const savedRough = r && r.frameRough;
+      if (typeof savedRough === 'boolean' && savedRough !== currentFrameRough) {
+        currentFrameRough = savedRough;
+        const roughEl = layoutToolbar.querySelector('#fj-frame-rough');
+        if (roughEl) roughEl.checked = savedRough;
         changed = true;
       }
       const savedMirror = r && r.pageNumberMirror;
