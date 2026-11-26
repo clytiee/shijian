@@ -567,13 +567,36 @@ async function printImage(panelElement, contentElement, titleValue) {
       showToast('❌ 打印窗口被拦截，请允许站点弹出窗口后重试', 2500);
       return;
     }
-    printWindow.document.write(printHtml);
-    printWindow.document.close();
+    // 写入要能自检重试：某些环境下 about:blank 的异步加载会把刚 write 的内容顶掉，
+    // 结果窗口一直停在空白的 about:blank（打印也没内容、也就不会自动关）
+    const writePrintDoc = () => {
+      printWindow.document.open();
+      printWindow.document.write(printHtml);
+      printWindow.document.close();
+    };
+    writePrintDoc();
+    const printContentReady = () => {
+      try {
+        const pages = printWindow.document.querySelector('.fj-pages');
+        return !!(pages && pages.children.length);
+      } catch (e) { return false; }
+    };
     
     // ========== 这里是你要加的位置 ==========
     // 等待内容加载完成后触发打印
-    printWindow.onload = () => {
+    // 注意不能用 onload：about:blank 在 document.write 之前可能已经 load 过，
+    // 之后再挂 onload 永远不触发（现象就是“弹出来了但不会自动打印/关窗”）
+    let printStarted = false;
+    const startPrint = () => {
+      if (printStarted) return;
+      printStarted = true;
       setTimeout(() => {
+        if (!printContentReady()) {
+          // 内容没落地就别对着空白页打印了，直接关窗提示
+          try { if (!printWindow.closed) printWindow.close(); } catch (e) {}
+          showToast('❌ 打印页内容未加载，请重试', 2500);
+          return;
+        }
         let afterPrintFired = false;
         // 关窗统一走这里：等一帧让打印任务落地再关，避免把打印对话框一起关掉
         const closeWindow = () => {
@@ -600,15 +623,41 @@ async function printImage(panelElement, contentElement, titleValue) {
           if (afterPrintFired || blocked) closeWindow();
         }, 0);
 
-        // 超时保护：5 秒后强制关闭，只作最后兜底
+        // 「导出 PDF」时对话框可能一直挂着，afterprint 迟迟不来、而一次性 close() 在对话框
+        // 打开期间会被浏览器忽略；所以改成轮询：对话框曾让窗口失焦、之后重新拿回焦点 = 已关闭
+        let lostFocus = false;
+        const pollTimer = setInterval(() => {
+          if (printWindow.closed) { clearInterval(pollTimer); return; }
+          if (afterPrintFired) { clearInterval(pollTimer); closeWindow(); return; }
+          let focused = false;
+          try { focused = printWindow.document.hasFocus(); } catch (e) { focused = false; }
+          if (!focused) lostFocus = true;
+          else if (lostFocus) { clearInterval(pollTimer); closeWindow(); }
+        }, 1000);
+
+        // 硬兜底：60 秒后无论如何关掉
         setTimeout(() => {
-          if (!printWindow.closed) {
-            printWindow.close();
-          }
-        }, 5000);
+          clearInterval(pollTimer);
+          if (!printWindow.closed) printWindow.close();
+        }, 60000);
       }, 300);
     };
-    // ========== 上面的代码块加在这里 ==========
+    // 轮询确认内容真的落到打印窗口里：没落地就重写，最多 6 次（约 1.2 秒）
+    let writeTries = 0;
+    const waitPrintReady = () => {
+      if (printWindow.closed) return;
+      if (printContentReady()) {
+        startPrint();
+        return;
+      }
+      if (writeTries++ < 6) {
+        writePrintDoc();
+        setTimeout(waitPrintReady, 200);
+      } else {
+        startPrint();   // 交给 startPrint 里的判定：内容还是没有就关窗提示
+      }
+    };
+    setTimeout(waitPrintReady, 150);
     
     // 恢复工具栏显示
     if (originalCloseBtn) originalCloseBtn.style.display = originalCloseDisplay || '';
@@ -1537,6 +1586,23 @@ function cmapChineseHits(name) {
   return best;
 }
 
+// 系统自带中文／西文字体的判定（“系统字体”开关用）
+// 方正金陵是插件自带默认字体，不算系统字体，避免一开面板就把它藏起来
+const SYSTEM_FONT_EXCLUDE = new Set(['方正金陵', 'fzjinl-b_gbjf']);
+
+function isSystemFont(name) {
+  const lower = String(name || '').toLowerCase().trim();
+  if (!lower) return false;
+  if (SYSTEM_FONT_EXCLUDE.has(lower)) return false;
+  return TIER1_FONTS.some((n) => {
+    const e = n.toLowerCase();
+    if (lower === e || lower.startsWith(e)) return true;
+    if (!e.startsWith(lower)) return false;
+    const next = e.charAt(lower.length);
+    return next === '' || next === ' ' || next === '-' || next === '_' || next === '.';
+  });
+}
+
 function isWindowsEnFont(name) {
   const hits = cmapChineseHits(name);
   if (hits != null) return hits < CJK_MIN_HITS;
@@ -1556,10 +1622,13 @@ function sortFontOptions(list) {
       if (lower.startsWith(t1)) return { tier: 1, order };
     }
     // 检测过的字体以 cmap 结果为准：命中不到 100 字 → 归入英文字体（排在名单之后）
+    // 例外：显示名里带中文的（如「汉仪旗黑」家族名是英文、别名是中文），仍算中文字体，别混进英文堆里
+    const dispName = fontDisplayName(name);
+    const dispHasCJK = /[\u3400-\u9fff]/.test(dispName);
     const cnHits = cmapChineseHits(name);
     if (cnHits != null) {
-      if (cnHits < CJK_MIN_HITS) return { tier: 4, order: 1000 };
-    } else {
+      if (cnHits < CJK_MIN_HITS && !dispHasCJK) return { tier: 4, order: 1000 };
+    } else if (!dispHasCJK) {
       if (winEnOrder.has(lower)) return { tier: 4, order: winEnOrder.get(lower) };
       for (const [en, order] of winEnOrder) {
         if (lower.startsWith(en)) return { tier: 4, order };
@@ -1580,6 +1649,11 @@ function sortFontOptions(list) {
     const rb = rank(b);
     if (ra.tier !== rb.tier) return ra.tier - rb.tier;
     if (ra.order !== rb.order) return ra.order - rb.order;
+    // 二级之后一律按下拉里看到的显示名排序，避免「有中文名却按英文原名排」造成中英混排
+    if (ra.tier >= 2) {
+      const byDisp = fontDisplayName(a).localeCompare(fontDisplayName(b), 'zh-Hans-CN');
+      if (byDisp !== 0) return byDisp;
+    }
     return a.localeCompare(b, 'zh-Hans-CN');
   });
 }
@@ -1816,6 +1890,7 @@ let recentFonts = [];   // 最近使用过的字体（下拉里排最前）
 let favoriteFonts = []; // 收藏的字体（排在最前）
 let fontPanelScale = 1; // 字体下拉被拉大时，里面文字同步放大
 let showWindowsEnFonts = false; // “英文字体”：默认不显示 Windows 自带西文字体
+let showSystemFonts = false;    // “系统字体”：默认不显示系统自带的中文字体
 
 // 启动时先吃磁盘缓存：上次读到的全量字体立刻可用于搜索
 try { loadFontCache(); } catch (e) {}
@@ -3291,7 +3366,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   footer.innerHTML = `
     <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; width: 100%;">
       <button id="fj-copy-text" title="复制文本">复制</button>
-      <input type="checkbox" id="fj-auto-close" style="width:12px; height:12px; cursor: pointer; margin: 0;"></input><label title="打印/下载后自动关闭">自动关闭</label>
+      <input type="checkbox" id="fj-auto-close" style="width:12px; height:12px; cursor: pointer; margin: 0;"></input><label title="打印或下载完成后自动关闭预览面板（打印弹出页不受此开关影响，始终自动关闭）">自动关闭</label>
     </div>
     <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
       <button id="fj-print-image" class="fj-btn-primary" style="flex: 1; height: 32px; font-size: 13px;" title="默认为A5尺寸，无页眉页脚">打印</button>
@@ -3995,9 +4070,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         // 分组顺序：收藏 → 最近使用 → 全部
         const favList = favoriteFonts.filter(n => matchName(n));
         const recent = recentFonts.filter(n => !favList.includes(n) && matchName(n));
-        // “英文字体”未勾选时，Windows 自带西文字体不在“全部字体”和搜索结果里出现
+        // 未勾选时，系统自带字体 / Windows 西文字体不在「全部字体」和搜索结果里出现
         // （收藏 / 最近使用仍照常显示，用户自己挑过的不会被藏起来）
-        const visibleInAll = (n) => !(showWindowsEnFonts === false && isWindowsEnFont(n));
+        const visibleInAll = (n) => !(showSystemFonts === false && isSystemFont(n))
+          && !(showWindowsEnFonts === false && isWindowsEnFont(n));
         let groups;
         if (q) {
           const others = baseList.filter(n => !favList.includes(n) && !recent.includes(n) && matchName(n) && visibleInAll(n));
@@ -4007,7 +4083,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           groups = [
             { label: '收藏', list: favList, keep: true },
             { label: '最近使用', list: recent },
-            { label: '全部字体', list: others, withEnToggle: true }
+            { label: `全部字体（${others.length}）`, list: others, withEnToggle: true }
           ].filter(g => g.list.length || g.withEnToggle || g.keep);
         }
         const s = fontPanelScale;              // 下拉被拉大时文字同步放大
@@ -4024,7 +4100,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         const entries = [];
         groups.forEach((g) => {
           if (g.label) entries.push({ type: 'head', label: g.label, withEnToggle: !!g.withEnToggle });
-          g.list.forEach(n => entries.push({ type: 'font', name: n, showDel: g.label === '最近使用' }));
+          // 「全部字体」组每行加个序号，方便对位置
+          const numbered = String(g.label || '').indexOf('全部字体') === 0;
+          g.list.forEach((n, i) => entries.push({ type: 'font', name: n, showDel: g.label === '最近使用', index: numbered ? i + 1 : 0 }));
         });
         // 「全部字体」页入口挂在第一个分组标题上（通常是“收藏”那一行最右）
         const firstHead = entries.find(e => e.type === 'head');
@@ -4039,26 +4117,34 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         }
 
         const headHtml = (label, withEnToggle, withAllLink) => {
+          const chkStyle = `width: ${(11 * s).toFixed(1)}px; height: ${(11 * s).toFixed(1)}px; margin: 0; cursor: pointer;`;
+          const sysToggle = withEnToggle
+            ? `<label class="fj-sys-toggle" title="显示系统自带的中文字体（宋体、微软雅黑、苹方等）" style="display: flex; align-items: center; gap: 4px; flex: 0 0 auto; cursor: pointer; color: #64748b; font-size: ${fHead}px;"><input type="checkbox" class="fj-sys-chk"${showSystemFonts ? ' checked' : ''} style="${chkStyle}">系统字体</label>`
+            : '';
           const enToggle = withEnToggle
-            ? `<label class="fj-en-toggle" title="显示 Windows 自带的西文字体" style="display: flex; align-items: center; gap: 4px; flex: 0 0 auto; cursor: pointer; color: #64748b; font-size: ${fHead}px;"><input type="checkbox" class="fj-en-chk"${showWindowsEnFonts ? ' checked' : ''} style="width: ${(11 * s).toFixed(1)}px; height: ${(11 * s).toFixed(1)}px; margin: 0; cursor: pointer;">英文字体</label>`
+            ? `<label class="fj-en-toggle" title="显示 Windows 自带的西文字体" style="display: flex; align-items: center; gap: 4px; flex: 0 0 auto; cursor: pointer; color: #64748b; font-size: ${fHead}px;"><input type="checkbox" class="fj-en-chk"${showWindowsEnFonts ? ' checked' : ''} style="${chkStyle}">英文字体</label>`
             : '';
           const allLink = withAllLink
             ? `<span class="fj-font-all" title="在新标签页查看全部字体的完整元数据" style="flex: 0 0 auto; color: #2563eb; font-size: ${fHead}px; cursor: pointer; text-decoration: underline;">全部字体</span>`
             : '';
-          return `<div style="padding: ${(4 * s).toFixed(1)}px ${padX}px ${(3 * s).toFixed(1)}px; font-size: ${fHead}px; color: #94a3b8; background: #f8fafc; border-top: 1px solid #eef2f7; border-bottom: 1px solid #eef2f7; display: flex; align-items: center; justify-content: space-between; gap: 8px;"><span>${label}</span><span style="display: flex; align-items: center; gap: 10px;">${allLink}${enToggle}</span></div>`;
+          return `<div style="padding: ${(4 * s).toFixed(1)}px ${padX}px ${(3 * s).toFixed(1)}px; font-size: ${fHead}px; color: #94a3b8; background: #f8fafc; border-top: 1px solid #eef2f7; border-bottom: 1px solid #eef2f7; display: flex; align-items: center; justify-content: space-between; gap: 8px;"><span>${label}</span><span style="display: flex; align-items: center; gap: 10px;">${allLink}${sysToggle}${enToggle}</span></div>`;
         };
-        const itemHtml = (n, showDel) => {
+        const itemHtml = (n, showDel, index) => {
           const cssName = "'" + String(n).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
           const disp = fontDisplayName(n);
           const isFav = favoriteFonts.includes(n);
           const isRecent = recentFonts.includes(n);
+          const idxTag = index
+            ? `<span style="flex: 0 0 auto; min-width: ${(10 * s).toFixed(1)}px; text-align: left; font-family: system-ui, sans-serif; font-size: ${(9 * s).toFixed(1)}px; line-height: 1; color: #a8b3c1;">${index}</span>`
+            : '';
+          const padLeft = index ? (6 * s).toFixed(1) : padX;
           const star = `<span class="fj-fav" data-font="${esc(n)}" title="${isFav ? '取消收藏' : '收藏'}" style="flex: 0 0 auto; padding: 0 4px; font-size: ${fStar}px; line-height: 1; cursor: pointer; color: ${isFav ? '#d97706' : '#94a3b8'}; display: ${isFav ? 'inline-block' : 'none'};">${isFav ? '★' : '☆'}</span>`;
           // ✕ 只在「最近使用」分组里出现（收藏/全部字体分组不显示）
           const delBtn = (showDel && isRecent)
             ? `<span class="fj-recent-del" data-font="${esc(n)}" title="从最近使用中移除" style="flex: 0 0 auto; padding: 0 4px; color: #94a3b8; font-size: ${fDel}px; cursor: pointer;">✕</span>`
             : '';
-          return `<div class="fj-font-item" data-font="${esc(n)}" style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: ${padY}px ${padX}px; cursor: pointer; white-space: nowrap; overflow: hidden;">
-            <span style="flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px;">
+          return `<div class="fj-font-item" data-font="${esc(n)}" style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: ${padY}px ${padX}px ${padY}px ${padLeft}px; cursor: pointer; white-space: nowrap; overflow: hidden;">
+            ${idxTag}<span style="flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px;">
               <span class="fj-font-sample" data-font="${esc(n)}" style="flex: 0 0 auto; font-family: ${cssName}; font-size: ${fSample}px; line-height: ${(19.5 * s).toFixed(1)}px; color: #1e293b; white-space: nowrap;">${fontSampleLine}</span>
               <span title="${esc(n)}" style="flex: 1 1 auto; min-width: 0; font-family: system-ui, sans-serif; font-size: ${fName}px; line-height: 1.3; color: #94a3b8; white-space: nowrap; overflow: hidden;">${esc(disp)}</span>
             </span>${star}${delBtn}</div>`;
@@ -4124,6 +4210,15 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
             });
           });
           // “全部字体”行末的英文字体开关：勾选后 Windows 自带西文字体才参与显示
+          root.querySelectorAll('.fj-sys-chk').forEach(chk => {
+            chk.addEventListener('change', (ev) => {
+              ev.stopPropagation();
+              showSystemFonts = !!chk.checked;
+              try { chrome.storage.local.set({ showSystemFonts }); } catch (e) {}
+              renderFontPanel(q, !!q);
+            });
+            chk.addEventListener('mousedown', (ev) => ev.stopPropagation());
+          });
           root.querySelectorAll('.fj-en-chk').forEach(chk => {
             chk.addEventListener('change', (ev) => {
               ev.stopPropagation();
@@ -4151,7 +4246,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           const chunk = entries.slice(renderedCount, renderedCount + CHUNK);
           renderedCount += chunk.length;
           const tmp = document.createElement('div');
-          tmp.innerHTML = chunk.map(e => e.type === 'head' ? headHtml(e.label, e.withEnToggle, e.withAllLink) : itemHtml(e.name, e.showDel)).join('');
+          tmp.innerHTML = chunk.map(e => e.type === 'head' ? headHtml(e.label, e.withEnToggle, e.withAllLink) : itemHtml(e.name, e.showDel, e.index)).join('');
           bindChunk(tmp);
           while (tmp.firstChild) fontPanel.appendChild(tmp.firstChild);
           // 一屏还没填满就继续追加
@@ -4308,10 +4403,11 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         } catch (e) {}
       }
       try {
-        chrome.storage.local.get(['fontFamily', 'recentFonts', 'favoriteFonts', 'showWindowsEnFonts'], (r) => {
+        chrome.storage.local.get(['fontFamily', 'recentFonts', 'favoriteFonts', 'showWindowsEnFonts', 'showSystemFonts'], (r) => {
           if (r && Array.isArray(r.recentFonts)) recentFonts = r.recentFonts.slice(0, 8);
           if (r && Array.isArray(r.favoriteFonts)) favoriteFonts = r.favoriteFonts.slice(0, 30);
           if (r && typeof r.showWindowsEnFonts === 'boolean') showWindowsEnFonts = r.showWindowsEnFonts;
+          if (r && typeof r.showSystemFonts === 'boolean') showSystemFonts = r.showSystemFonts;
           const saved = r && r.fontFamily;
           if (saved) {
             fontFamilyInput.value = saved;
@@ -4837,11 +4933,23 @@ function toVerticalPunctuation(src) {
   return { text: s, changed };
 }
 
-function showToast(msg, duration = 2000) {
+// 提示条用的内联图标（Lucide）：wand = 智能模式，text-cursor-input = 手动模式
+const TOAST_ICON_WAND = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9h2"/><path d="M20 9h2"/><path d="M17.8 11.8 19 13"/><path d="M15 9h.01"/><path d="M17.8 6.2 19 5"/><path d="m3 21 9-9"/><path d="M12.2 6.2 11 5"/></svg>`;
+const TOAST_ICON_CURSOR = `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1"/><path d="M13 20h-1a3 3 0 0 1-3-3 3 3 0 0 1-3 3H5"/><path d="M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1"/><path d="M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7"/><path d="M9 7v10"/></svg>`;
+
+function showToast(msg, duration = 2000, iconHtml = '') {
   console.log('[DEBUG] showToast:', msg);
   const toast = document.createElement('div');
-  toast.textContent = msg;
-  toast.style.cssText = `position:fixed; bottom:0; left:50%; transform:translateX(-50%); background:#1e293b; color:white; padding:8px 20px; border-radius:40px; font-size:0.85rem; z-index:10000000; animation:fadeInOut 2s ease;`;
+  toast.style.cssText = `position:fixed; bottom:0; left:50%; transform:translateX(-50%); background:#1e293b; color:white; padding:8px 20px; border-radius:40px; font-size:0.85rem; z-index:10000000; animation:fadeInOut ${duration}ms ease; display:inline-flex; align-items:center; gap:6px;`;
+  if (iconHtml) {
+    const iconWrap = document.createElement('span');
+    iconWrap.style.cssText = 'display:inline-flex; align-items:center; flex:0 0 auto;';
+    iconWrap.innerHTML = iconHtml;
+    toast.appendChild(iconWrap);
+  }
+  const textNode = document.createElement('span');
+  textNode.textContent = msg;
+  toast.appendChild(textNode);
   if (!document.getElementById('toast-anim')) {
     const animStyle = document.createElement('style');
     animStyle.id = 'toast-anim';
@@ -4896,10 +5004,12 @@ function activateMode() {
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp);
     
-    const modeHint = smartMode
-      ? '智能模式：第1行→标题，第2行→作者，其余→正文'
-      : '手动模式：先选中标题/作者，再点击要提取的 DIV';
-    showToast(`🎯 进入选择模式，${modeHint}；按住 Ctrl 可连续点选多块，按 ESC 退出`, 2200);
+    const tail = 'Ctrl 连选，Esc 退出';
+    if (smartMode) {
+      showToast(`智能模式：行1标题，行2作者；${tail}`, 3500, TOAST_ICON_WAND);
+    } else {
+      showToast(`手动模式：先选标题/作者；${tail}`, 3500, TOAST_ICON_CURSOR);
+    }
   });
 }
 
@@ -4959,9 +5069,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     cancelMode(); 
     sendResponse({ success: true }); 
   }
-  else if (request.action === 'SHOW_TOAST') { 
-    showToast(request.message, 1500); 
-    sendResponse({ success: true }); 
+  else if (request.action === 'SHOW_TOAST') {
+    // 右键菜单切换模式发来的提示：去掉原来的 emoji，按模式配同一套 Lucide 图标
+    const msg = String(request.message || '').replace(/^[\s\u{1F300}-\u{1FAFF}\u2600-\u27BF]+/u, '');
+    const icon = msg.indexOf('智能') === 0 ? TOAST_ICON_WAND : (msg.indexOf('手动') === 0 ? TOAST_ICON_CURSOR : '');
+    showToast(msg, 3500, icon);
+    sendResponse({ success: true });
   }
   return true;
 });
