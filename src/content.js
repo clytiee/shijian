@@ -939,7 +939,7 @@ function buildRoughFrameInk(frameWpx, frameHpx, ruleXs, seed) {
   const i0 = inset, i1 = frameWpx - inset, j0 = inset, j1 = frameHpx - inset;
   const innerEdges = [[i0, j0, i1, j0], [i0, j1, i1, j1], [i0, j0, i0, j1], [i1, j0, i1, j1]];
   innerEdges.forEach((e) => {
-    parts.push(`<path d="${fjRoughLine(e[0], e[1], e[2], e[3], 0.4, rand)}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="0.5" opacity="0.8" vector-effect="non-scaling-stroke"/>`);
+    parts.push(`<path d="${fjRoughLine(e[0], e[1], e[2], e[3], 0.15, rand)}" fill="none" stroke="${FRAME_INK_THIN}" stroke-width="0.5" opacity="0.8" vector-effect="non-scaling-stroke"/>`);
   });
   ruleXs.forEach((x) => parts.push(fjRoughRule(x, j0 + 1, j1 - 1, rand)));
   return parts.join('');
