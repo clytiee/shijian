@@ -994,6 +994,7 @@ let currentPageNumber = false;
 let currentPageNumberMirror = false;   // 奇偶页对称：奇数页码在左、偶数页码在右
 let currentFrameFullPage = false;      // 版框「满页」：剩余宽度平摊给各列，框横向满版心
 let currentFrameRough = false;         // 版框「做旧」：线条加手工刻版式抖动、界行断续
+let currentVerticalCenter = false;     // 「中」：本页所有列都不到一列高时，文字在版心内上下居中（关＝齐上）
 const PN_COL_W_MM = 4.2;               // 页码所占的那一列宽度（用于对称时扣减页边距）
 
 // 页码落在哪一侧：未开对称时始终在左
@@ -2510,6 +2511,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         <input type="checkbox" id="fj-page-number-mirror" style="margin: 0; cursor: pointer;">
         <span>称</span>
       </label>
+      <label title="垂直居中：本页所有列都不到一列高时，文字在版心内上下居中；关闭则文字齐上（顶格）" style="display: inline-flex; align-items: center; gap: 5px; height: 22px; line-height: 22px; cursor: pointer;">
+        <input type="checkbox" id="fj-vcenter" style="margin: 0; cursor: pointer;">
+        <span>中</span>
+      </label>
     </div>
   `;
 
@@ -2586,6 +2591,19 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       renderPreviewPages();
       try { chrome.storage.local.set({ pageNumberMirror: currentPageNumberMirror }); } catch (e) {}
       showToast(currentPageNumberMirror ? '已启用奇偶页对称' : '已关闭奇偶页对称', 1200);
+    });
+  }
+
+  // 「中」：本页所有列都不到一列高时，文字在版心内上下居中；关闭则齐上
+  const vcenterToggle = layoutToolbar.querySelector('#fj-vcenter');
+  if (vcenterToggle) {
+    vcenterToggle.checked = currentVerticalCenter;
+    vcenterToggle.addEventListener('change', () => {
+      currentVerticalCenter = vcenterToggle.checked;
+      // 只改版心内的上下对齐方式，分页与切列不变
+      renderPreviewPages();
+      try { chrome.storage.local.set({ verticalCenter: currentVerticalCenter }); } catch (e) {}
+      showToast(currentVerticalCenter ? '文字已垂直居中' : '文字已齐上', 1200);
     });
   }
   
@@ -2731,7 +2749,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         <div class="vcol" style="width:${(effWmm > 0 ? effWmm : col.widthPx / PX_PER_MM).toFixed(2)}mm;font-size:${col.fontSize};line-height:${col.lineHeight};font-weight:${col.fontWeight};letter-spacing:${col.letterSpacing || 'normal'};color:${col.color || '#1e293b'};font-family:'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif;">${col.html}</div>
       `).join('');
       const frameHtml = buildPageFrame(colsOfPage, bandHmm, MARGIN_MM, pageIndex + 1, pageWmm, effWmm, slots);
-      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM + framePadY}mm ${pm.right}mm ${MARGIN_MM + framePadY}mm ${pm.left}mm;${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
+      return `<div class="fj-page" data-page="${pageIndex + 1}" style="width:${pageWmm}mm;height:${pageHmm}mm;padding:${MARGIN_MM + framePadY}mm ${pm.right}mm ${MARGIN_MM + framePadY}mm ${pm.left}mm;justify-content:${currentVerticalCenter ? 'center' : 'flex-start'};${currentAntiquePaper ? antiquePaperBackground() : ''}"><div class="fj-cols">${colsHtml}</div>${frameHtml}</div>`;
     }).join('');
     // 渲染完立即按真实位置校正框的上下边界（预览、打印、导图都吃这套内联样式）
     syncFrameGeometry();
@@ -3398,7 +3416,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 记住仿古纸底纹、版框、页码开关
   try {
-    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'frameFullPage', 'frameRough', 'pageNumber', 'pageNumberMirror'], (r) => {
+    chrome.storage.local.get(['antiquePaper', 'antiqueFrame', 'frameFullPage', 'frameRough', 'pageNumber', 'pageNumberMirror', 'verticalCenter'], (r) => {
       let changed = false;
       const saved = r && r.antiquePaper;
       if (typeof saved === 'boolean' && saved !== currentAntiquePaper) {
@@ -3438,6 +3456,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         currentPageNumberMirror = savedMirror;
         const mirrorEl = layoutToolbar.querySelector('#fj-page-number-mirror');
         if (mirrorEl) mirrorEl.checked = savedMirror;
+        changed = true;
+      }
+      const savedVcenter = r && r.verticalCenter;
+      if (typeof savedVcenter === 'boolean' && savedVcenter !== currentVerticalCenter) {
+        currentVerticalCenter = savedVcenter;
+        const vcEl = layoutToolbar.querySelector('#fj-vcenter');
+        if (vcEl) vcEl.checked = savedVcenter;
         changed = true;
       }
       if (changed) renderPreviewPages();
@@ -4472,7 +4497,8 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       frameFullPage: currentFrameFullPage,
       frameRough: currentFrameRough,
       pageNumber: currentPageNumber,
-      pageNumberMirror: currentPageNumberMirror
+      pageNumberMirror: currentPageNumberMirror,
+      verticalCenter: currentVerticalCenter
     });
     // 按快照逐个控件恢复（都走各自的 change/apply 逻辑，保证界面与渲染同步）
     const restoreLayoutSnapshot = (snap) => {
@@ -4505,6 +4531,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       toggleTo('fj-frame-rough', snap.frameRough);
       toggleTo('fj-page-number', snap.pageNumber);
       toggleTo('fj-page-number-mirror', snap.pageNumberMirror);
+      toggleTo('fj-vcenter', snap.verticalCenter);
       renderVerticalContent(window.editedText || text, false);
       const epgCount = getEpigraphCount();
       if (epgCount > 0) applyEpigraphFormat();
@@ -4566,6 +4593,11 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         const mirrorEl = document.getElementById('fj-page-number-mirror');
         if (mirrorEl) mirrorEl.checked = false;
 
+        // 垂直居中也重置为关闭（齐上）
+        currentVerticalCenter = false;
+        const vcEl = document.getElementById('fj-vcenter');
+        if (vcEl) vcEl.checked = false;
+
         // 装订线归零
         currentGutterMm = 0;
         const gutterEl = document.getElementById('fj-gutter-val');
@@ -4579,7 +4611,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         renderVerticalContent(window.editedText || text, false);
         schedulePreviewPages();
         try {
-          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false, antiqueFrame: false, pageNumber: false, pageNumberMirror: false, gutterMm: 0, letterSpacing: 0 });
+          chrome.storage.local.set({ lineHeight: defaultLineHeight, marginMm: 8, layoutMode: 'portrait', antiquePaper: false, antiqueFrame: false, pageNumber: false, pageNumberMirror: false, verticalCenter: false, gutterMm: 0, letterSpacing: 0 });
         } catch (e) {}
         showToast('版面已重置', 1200);
       };
