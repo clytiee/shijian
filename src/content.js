@@ -358,38 +358,38 @@ async function printImage(panelElement, contentElement, titleValue) {
     // 等待内容加载完成后触发打印
     printWindow.onload = () => {
       setTimeout(() => {
-        // 监听窗口获得焦点（打印对话框关闭后，原窗口会重新获得焦点）
-        const handleFocus = () => {
+        let afterPrintFired = false;
+        // 关窗统一走这里：等一帧让打印任务落地再关，避免把打印对话框一起关掉
+        const closeWindow = () => {
           setTimeout(() => {
-            if (!printWindow.closed) {
-              printWindow.close();
-            }
+            if (!printWindow.closed) printWindow.close();
           }, 100);
-          printWindow.removeEventListener('focus', handleFocus);
         };
-        
-        printWindow.addEventListener('focus', handleFocus);
-        
-        // 触发打印
+        const markAfterPrint = () => {
+          afterPrintFired = true;
+          closeWindow();
+        };
+        // 必须在 print() 之前绑定：print() 在很多环境同步阻塞，等对话框关闭才返回，
+        // 若之后再绑定 afterprint 会错过事件（这就是以前要拖到超时才关的原因）
+        printWindow.addEventListener('afterprint', markAfterPrint);
+        printWindow.onafterprint = markAfterPrint;
+
+        // 触发打印；同步阻塞的环境下 print() 返回时对话框已经关掉了
+        const t0 = Date.now();
         printWindow.print();
-        
-        // 关闭打印窗口
-        // 备用方案：如果 onafterprint 支持，同时使用
-        printWindow.onafterprint = () => {
-          setTimeout(() => {
-            if (!printWindow.closed) {
-              printWindow.close();
-            }
-          }, 100);
-        };
-        
-        // 超时保护：5秒后强制关闭
+        const blocked = Date.now() - t0 > 400;
+
+        // 异步环境：afterprint 事件会来；同步环境：靠上面的 blocked 判断
+        setTimeout(() => {
+          if (afterPrintFired || blocked) closeWindow();
+        }, 0);
+
+        // 超时保护：5 秒后强制关闭，只作最后兜底
         setTimeout(() => {
           if (!printWindow.closed) {
             printWindow.close();
           }
-        }, 15000);
-        
+        }, 5000);
       }, 300);
     };
     // ========== 上面的代码块加在这里 ==========
