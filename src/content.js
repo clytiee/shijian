@@ -8,6 +8,16 @@ let savedSelectedText = '';
 let savedSubtitleText = '';
 let currentHighlightedElement = null;
 
+// 连续采集时，正文里标记「这一行是标题 / 作者」的不可见控制符（渲染时剥掉，只留样式）
+const TITLE_LINE_MARK = '\u0001';
+const AUTHOR_LINE_MARK = '\u0002';
+
+// 连续采集（按住 Ctrl 点选多块）
+let collectedBlocks = [];        // 已采集的块文本（按点选顺序）
+let collectedEls = [];           // 对应的 DOM 元素，用于高亮与清理
+let isCtrlHeld = false;
+let collectBar = null;
+
 let currentLineHeight = 2.0;
 let currentFontSize = 14;   // pt
 let currentFontFamily = '方正金陵';
@@ -73,6 +83,11 @@ if (!document.getElementById(styleId)) {
       box-shadow: 0 0 0 2px rgba(59,130,246,0.3) !important;
       background-color: rgba(59,130,246,0.2) !important;
     }
+    .fj-extractor-collected {
+      outline: 2px dashed #10b981 !important;
+      outline-offset: 2px !important;
+      background-color: rgba(16,185,129,0.12) !important;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -86,6 +101,7 @@ function clearHighlight() {
 
 function onMouseOver(event) {
   if (!isSelectionMode) return;
+  if (collectBar && collectBar.contains(event.target)) { clearHighlight(); return; }  // 采集条不算可采元素
   
   let target = event.target;
   while (target && target !== document.body && target.tagName !== 'DIV') {
@@ -112,7 +128,8 @@ function onMouseOut(event) {
 
 function onClickHandler(event) {
   if (!isSelectionMode) return;
-  
+  if (collectBar && collectBar.contains(event.target)) return;   // 采集条自身的点击不算采集
+
   // 获取目标 DIV
   let targetDiv = event.target;
   while (targetDiv && targetDiv !== document.body && targetDiv.tagName !== 'DIV') {
@@ -122,18 +139,29 @@ function onClickHandler(event) {
     showToast('⚠️ 请点击 DIV 元素', 1200);
     return;
   }
-  
+
   event.preventDefault();
   event.stopPropagation();
-  
+
   const extractedText = extractTextFromDiv(targetDiv);
-  
+
   if (!extractedText || extractedText.trim() === '') {
     showToast('⚠️ 所选 div 内没有可提取的文字', 1500);
     return;
   }
-  
-  // 获取智能模式状态
+
+  // 按住 Ctrl 或已经在连续采集中（已采集过块）：追加一块，继续留在选择模式
+  if (event.ctrlKey || isCtrlHeld || collectedBlocks.length > 0) {
+    addCollectedBlock(targetDiv, extractedText);
+    return;
+  }
+
+  openPanelFromText(extractedText);
+  cancelMode();
+}
+
+// 单个文本 → 打开竖排面板（智能模式按行拆标题/作者）
+function openPanelFromText(extractedText) {
   chrome.storage.sync.get(['smartMode'], (result) => {
     const smartMode = result.smartMode || false;
     let title = savedSelectedText;
@@ -166,8 +194,146 @@ function onClickHandler(event) {
       showA5FloatingPanel(extractedText, title, subtitle);
     }
   });
-  
-  cancelMode();
+}
+
+// ========== 连续采集：按住 Ctrl 点选多块，松开 Ctrl 提示确认 ==========
+function addCollectedBlock(el, txt) {
+  // 已采集过：再点一次＝取消采集这一块
+  const existIdx = collectedEls.indexOf(el);
+  if (existIdx >= 0) {
+    collectedEls.splice(existIdx, 1);
+    collectedBlocks.splice(existIdx, 1);
+    el.classList.remove('fj-extractor-collected');
+    clearHighlight();
+    if (collectedBlocks.length) setCollectBar(false);
+    else hideCollectBar();
+    showToast('已取消这一块', 1200);
+    return;
+  }
+  const clean = String(txt || '').replace(/\s+$/g, '');
+  if (!clean.trim()) return;
+  collectedBlocks.push(clean.trim());
+  collectedEls.push(el);
+  el.classList.add('fj-extractor-collected');
+  clearHighlight();
+  setCollectBar(false);
+}
+
+function ensureCollectBar() {
+  if (collectBar && collectBar.isConnected) return collectBar;
+  collectBar = document.createElement('div');
+  collectBar.style.cssText = 'position:fixed;left:50%;bottom:60px;transform:translateX(-50%);z-index:2147483646;display:none;align-items:center;gap:10px;background:#1e293b;color:#fff;padding:8px 10px 8px 16px;border-radius:40px;box-shadow:0 8px 28px rgba(0,0,0,.28);font-size:13px;font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;white-space:nowrap;';
+  const label = document.createElement('span');
+  label.id = 'fj-collect-label';
+  const ok = document.createElement('button');
+  ok.id = 'fj-collect-ok';
+  ok.textContent = '确认';
+  ok.style.cssText = 'height:26px;padding:0 14px;border:none;border-radius:20px;background:#10b981;color:#fff;font-size:13px;cursor:pointer;';
+  const cancel = document.createElement('button');
+  cancel.id = 'fj-collect-cancel';
+  cancel.textContent = '取消';
+  cancel.style.cssText = 'height:26px;padding:0 12px;border:1px solid #475569;border-radius:20px;background:transparent;color:#cbd5e1;font-size:13px;cursor:pointer;';
+  ok.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); finishCollect(); });
+  cancel.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); keepCollecting(); });
+  // 气泡阶段拦截即可（不要用捕获阶段，捕获阶段 stopPropagation 会拦住条内按钮自己的 click）
+  ['mousedown', 'pointerdown', 'click', 'keydown'].forEach((t) => {
+    collectBar.addEventListener(t, (e) => e.stopPropagation());
+  });
+  collectBar.appendChild(label);
+  collectBar.appendChild(ok);
+  collectBar.appendChild(cancel);
+  document.body.appendChild(collectBar);
+  return collectBar;
+}
+
+// ask=true：已松手，提示「已采集 N 块，是否确认」
+// ask=false：采集中/保留中，只给提示 + 确认按钮
+function setCollectBar(ask) {
+  const bar = ensureCollectBar();
+  const n = collectedBlocks.length;
+  bar.querySelector('#fj-collect-label').textContent = ask
+    ? `已连续采集 ${n} 块，是否确认？`
+    : (isCtrlHeld
+      ? `连续采集中 · 已采集 ${n} 块，松开 Ctrl 确认`
+      : `已采集 ${n} 块，可继续点选，或点「确认」`);
+  bar.querySelector('#fj-collect-cancel').style.display = ask ? '' : 'none';
+  bar.style.display = 'flex';
+}
+
+function hideCollectBar() { if (collectBar) collectBar.style.display = 'none'; }
+
+// 点「取消」：保留已采集的块，继续留在选择模式里采集
+function keepCollecting() {
+  if (!collectedBlocks.length) { hideCollectBar(); return; }
+  if (!isSelectionMode) return;
+  setCollectBar(false);
+}
+
+// 单块按智能模式规则拆：第1行→标题、第2行（≤20 字）→作者、其余→正文
+function parseSmartBlock(text) {
+  const lines = String(text || '').split(/\n/).filter(line => line.trim() !== '');
+  if (lines.length >= 2) {
+    const title = lines[0].trim();
+    let bodyFrom = 1;
+    let subtitle = '';
+    if (lines[1].length <= 20) { subtitle = lines[1].trim(); bodyFrom = 2; }
+    return { title, subtitle, body: lines.slice(bodyFrom).join('\n') };
+  }
+  if (lines.length === 1) return { title: lines[0].trim(), subtitle: '', body: '' };
+  return { title: '', subtitle: '', body: String(text || '') };
+}
+
+// 点「确认」：每块都按单独采集那样解析标题/作者；各块标题、作者行带不可见标记留在正文里，
+// 同时把「标题＝各块标题；拼接」「作者＝全同直用、不同取第一个＋等」放进右侧输入框
+// （正文已有内联标题时，预览不再另排顶部标题，避免重复）
+function finishCollect() {
+  if (!collectedBlocks.length) { hideCollectBar(); return; }
+  const blocks = collectedBlocks.slice();
+  resetCollect();
+  chrome.storage.sync.get(['smartMode'], (result) => {
+    const smartMode = result.smartMode || false;
+    if (!smartMode) {
+      showA5FloatingPanel(blocks.join('\n'), savedSelectedText, savedSubtitleText);
+      cancelMode();
+      return;
+    }
+    if (blocks.length === 1) {
+      const p = parseSmartBlock(blocks[0]);
+      showA5FloatingPanel(blocks[0], p.title, p.subtitle);
+      cancelMode();
+      return;
+    }
+    const lines = [];
+    const titles = [];
+    const authors = [];
+    blocks.forEach((b) => {
+      const p = parseSmartBlock(b);
+      if (p.title) titles.push(p.title);
+      authors.push(p.subtitle || '');
+      // 标题与作者并到同一行（题作者同行，跟单标题排版一致），只有其一时单独一行
+      if (p.title && p.subtitle) lines.push(TITLE_LINE_MARK + p.title + AUTHOR_LINE_MARK + p.subtitle);
+      else if (p.title) lines.push(TITLE_LINE_MARK + p.title);
+      else if (p.subtitle) lines.push(AUTHOR_LINE_MARK + p.subtitle);
+      if (p.body) lines.push(p.body);
+    });
+    // 标题框放各块标题（；分隔），作者框放「全同则直用 / 不同则第一个＋等」
+    const titleVal = titles.join('；');
+    let authorVal = '';
+    const nonEmpty = authors.filter(a => a);
+    if (nonEmpty.length) {
+      const allSame = authors.every(a => a && a === authors[0]);
+      authorVal = allSame ? authors[0] : (nonEmpty[0] + '等');
+    }
+    showA5FloatingPanel(lines.join('\n'), titleVal, authorVal);
+    cancelMode();
+  });
+}
+
+function resetCollect() {
+  collectedEls.forEach((el) => { try { el.classList.remove('fj-extractor-collected'); } catch (e) {} });
+  collectedEls = [];
+  collectedBlocks = [];
+  hideCollectBar();
 }
 
 function extractTextFromDiv(divElement) {
@@ -223,6 +389,56 @@ function sliceColumnText(text, maxChars) {
     i = end;
   }
   return out;
+}
+
+// 「括号缩」专用：括号内的字按半宽计，所以同样的列字数能塞进更多字，
+// 原来被挤到下一列的字就能回填到上一列
+const BR_OPEN = '（(【[｛{〔〖〈';
+const BR_CLOSE = '）)】]｝}〕〗〉';
+
+function sliceColumnTextByShrinkUnits(text, maxChars) {
+  const cols = [];
+  let cur = '';
+  let acc = 0;
+  let depth = 0;
+  for (const ch of text) {
+    let w = 1;
+    if (BR_OPEN.indexOf(ch) !== -1) { depth++; w = 0.5; }
+    else if (BR_CLOSE.indexOf(ch) !== -1) { w = depth > 0 ? 0.5 : 1; if (depth > 0) depth--; }
+    else if (depth > 0) w = 0.5;
+    if (cur && acc + w > maxChars) { cols.push(cur); cur = ''; acc = 0; }
+    cur += ch;
+    acc += w;
+  }
+  if (cur) cols.push(cur);
+  return cols;
+}
+
+// 把一列文字里位于括号中的部分包成小字夹注；state.depth 在列之间延续，
+// 括号跨列被切断也能接着缩
+function htmlWithBracketShrunk(text, state, halfPt, color) {
+  let html = '';
+  let plain = '';
+  let closedInThisCol = 0;
+  const flush = () => { if (plain) { html += escapeHtml(plain); plain = ''; } };
+  const wrap = (s) => { html += `<span style="font-size:${halfPt};color:${color};">${escapeHtml(s)}</span>`; };
+  for (const ch of text) {
+    if (state.depth > 0) {
+      wrap(ch);
+      if (BR_CLOSE.indexOf(ch) !== -1) { state.depth--; if (state.depth === 0) closedInThisCol++; }
+      continue;
+    }
+    if (BR_OPEN.indexOf(ch) !== -1) {
+      flush();
+      state.depth = 1;
+      closedInThisCol++;
+      wrap(ch);
+      continue;
+    }
+    plain += ch;
+  }
+  flush();
+  return { html, closed: closedInThisCol };
 }
 
 // 打印图片函数
@@ -456,7 +672,7 @@ ${css}
 function downloadCanvas(canvas, titleValue, suffix = '') {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
   let safeTitle = (titleValue || '').replace(/[\\/:*?"<>|]/g, '-').trim();
-  if (safeTitle.length > 30) safeTitle = safeTitle.substring(0, 30);
+  if (safeTitle.length > 50) safeTitle = safeTitle.substring(0, 50);
   if (!safeTitle) safeTitle = '无标题';
   const link = document.createElement('a');
   link.download = `${safeTitle}${suffix}-${timestamp}.png`;
@@ -571,7 +787,7 @@ async function captureAndDownload(panelElement, contentElement, titleValue) {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
         
         let safeTitle = titleValue.replace(/[\\/:*?"<>|]/g, '-').trim();
-        if (safeTitle.length > 30) safeTitle = safeTitle.substring(0, 30);
+        if (safeTitle.length > 50) safeTitle = safeTitle.substring(0, 50);
         if (!safeTitle) safeTitle = '无标题';
         
         link.download = `${safeTitle}-方正金陵-${timestamp}.png`;
@@ -1761,8 +1977,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   const existingPanel = document.getElementById('fj-a5-panel');
   if (existingPanel) existingPanel.remove();
   
-  let defaultTitle = selectedTitle;
-  if (!defaultTitle) defaultTitle = '方正金陵 · 雅集';
+  let defaultTitle = selectedTitle || '';
   if (defaultTitle.length > 50) defaultTitle = defaultTitle.substring(0, 50) + '...';
   
   let currentSubtitle = selectedSubtitle;
@@ -2678,17 +2893,24 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   function renderVerticalContent(sourceText, autoLineHeight = true) {
     console.log('[DEBUG] renderVerticalContent 开始执行, sourceText 长度:', sourceText?.length);
     
-    const titleText = titleInput.value || '无标题';
-    const subtitleText = subtitleInput.value || '';
+    const titleText = (titleInput.value || '').trim();
+    const subtitleText = (subtitleInput.value || '').trim();
     console.log('[DEBUG] 标题:', titleText, '副标题:', subtitleText);
+    // 正文里已经有内联标题行（连续采集多块）时，不再另排顶部标题，避免重复
+    const hasInlineTitle = (sourceText || '').split('\n').some((l) => l.charAt(0) === TITLE_LINE_MARK);
     
     let titleHtml = '';
-    if (subtitleText && subtitleText.trim() !== '') {
+    if (hasInlineTitle) {
+      titleHtml = '';
+    } else if (titleText && subtitleText) {
       titleHtml = `<div class="vertical-paragraph" style="font-weight: bold; margin-bottom: 20px;">
-        ${escapeHtml(titleText)}&emsp;<span style="font-size: 11pt; font-weight: normal;">${escapeHtml(subtitleText.trim())}</span>
+        ${escapeHtml(titleText)}&emsp;<span style="font-size: 11pt; font-weight: normal;">${escapeHtml(subtitleText)}</span>
       </div>`;
-    } else {
+    } else if (titleText) {
       titleHtml = `<div class="vertical-paragraph" style="font-weight: bold;">${escapeHtml(titleText)}</div>`;
+    } else if (subtitleText) {
+      // 只有作者没有标题：只排一行小字作者，不补「无标题」
+      titleHtml = `<div class="vertical-paragraph" style="font-weight: normal; font-size: 11pt;">${escapeHtml(subtitleText)}</div>`;
     }
     
     //const paragraphs = sourceText.split(/\n+/);
@@ -2713,15 +2935,48 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           // 空白行：用全角空格撑出一个完整宽度的空列（空 div 宽度为 0，翻页时会被丢掉）
           contentHtml += `<div class="vertical-paragraph">　</div>`;
       }else {
-          const colTexts = sliceColumnText(para, maxChars);
-          columnCount = colTexts.length;
-          for (const colText of colTexts) {
-            contentHtml += `<div class="vertical-paragraph" style="font-weight: ${currentBold ? 'bold' : 'normal'};${currentBodyColor ? ` color: ${currentBodyColor};` : ''}">${escapeHtml(colText)}</div>`;
+          // 行首不可见标记：\u0001 = 标题行（业内再用 \u0002 分隔作者）、\u0002 = 作者行
+          // 渲染成对应样式，标记本身不打印
+          let lineMark = '';
+          if (para.charAt(0) === TITLE_LINE_MARK) { lineMark = 'title'; para = para.slice(1); }
+          else if (para.charAt(0) === AUTHOR_LINE_MARK) { lineMark = 'author'; para = para.slice(1); }
+          if (lineMark === 'title') {
+            // 标题与作者同一列：标题加粗，作者 11pt 常规紧跟（与单标题时的写法一致，不切列）
+            let titlePart = para;
+            let authorPart = '';
+            const sepIdx = para.indexOf(AUTHOR_LINE_MARK);
+            if (sepIdx >= 0) { titlePart = para.slice(0, sepIdx); authorPart = para.slice(sepIdx + 1); }
+            columnCount = 1;
+            const authorInline = authorPart
+              ? `&emsp;<span style="font-size: 11pt; font-weight: normal;">${escapeHtml(authorPart)}</span>`
+              : '';
+            contentHtml += `<div class="vertical-paragraph fj-line-title" style="font-weight: bold;${authorPart ? ' margin-bottom: 20px;' : ''}">${escapeHtml(titlePart)}${authorInline}</div>`;
+          } else if (lineMark === 'author') {
+            columnCount = 1;
+            contentHtml += `<div class="vertical-paragraph fj-line-author" style="font-weight: normal; font-size: 11pt;">${escapeHtml(para)}</div>`;
+          } else {
+            if (bracketShrinkOn) {
+              // 括号内按半宽计字数，重新切列：变小的夹注能把原本溢到下一列的字回填上来
+              const colTextsS = sliceColumnTextByShrinkUnits(para, maxChars);
+              columnCount = colTextsS.length;
+              const st = { depth: 0 };
+              const halfPt = (currentFontSize / 2) + 'pt';
+              for (const colText of colTextsS) {
+                const r = htmlWithBracketShrunk(colText, st, halfPt, '#1e3a8a');
+                contentHtml += `<div class="vertical-paragraph" style="font-weight: ${currentBold ? 'bold' : 'normal'};${currentBodyColor ? ` color: ${currentBodyColor};` : ''}">${r.html}</div>`;
+              }
+            } else {
+              const colTexts = sliceColumnText(para, maxChars);
+              columnCount = colTexts.length;
+              for (const colText of colTexts) {
+                contentHtml += `<div class="vertical-paragraph" style="font-weight: ${currentBold ? 'bold' : 'normal'};${currentBodyColor ? ` color: ${currentBodyColor};` : ''}">${escapeHtml(colText)}</div>`;
+              }
+            }
           }
       }
       totalColumns += columnCount;
     }
-    const totalCount = 1 + totalColumns;
+    const totalCount = (titleHtml ? 1 : 0) + totalColumns;
     console.log('[DEBUG] 总列数:', totalCount, '内容列数:', totalColumns);
     // 当前总列数赋值给全局变量
     currentColumnCount = totalCount;
@@ -2735,7 +2990,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     allParagraphs.forEach(para => {
       para.style.lineHeight = currentLineHeight;
       para.style.fontFamily = `'${currentFontFamily}', 'FZJinL-B_GBJF', '华文楷书', 'KaiTi', '宋体', serif`;
-      if (!para.classList.contains('epigraph')) {
+      if (!para.classList.contains('epigraph') && !para.classList.contains('fj-line-author')) {
         para.style.fontSize = currentFontSize + 'pt';
         para.style.letterSpacing = currentLetterSpacing ? currentLetterSpacing + 'px' : '';
       }
@@ -2847,50 +3102,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   }
 
   // ========== 括号 · 缩：不删内容，把括号（含内容）排成小字夹注 ==========
-  // 字号 = 正文字号的一半，颜色深蓝；重新渲染后会自动再套一次
-  // 逐列扫描而不是逐段配对：括号跨列被切断（开括号在这一列、收括号在下一列）也能缩到
+  // 字号 = 正文字号的一半，颜色深蓝；渲染时按半宽计字数，括号内变小的字能回填到上一列
   let bracketShrinkOn = false;
 
-  function applyBracketShrink() {
-    const verticalContentDiv = contentArea.querySelector('.vertical-content');
-    if (!verticalContentDiv) return 0;
-    const size = (currentFontSize / 2) + 'pt';
-    const COLOR = '#1e3a8a';
-    const OPEN = '（(【[｛{〔〖〈';
-    const CLOSE = '）)】]｝}〕〗〉';
-    let depth = 0;
-    let touched = 0;
-    verticalContentDiv.querySelectorAll('.vertical-paragraph').forEach((p) => {
-      if (p.classList.contains('epigraph')) { depth = 0; return; }   // 题记本身已是小字，跳过
-      const src = p.textContent || '';
-      if (!src) return;
-      let html = '';
-      let plain = '';
-      let changed = false;
-      const flushPlain = () => { if (plain) { html += escapeHtml(plain); plain = ''; } };
-      const wrap = (txt) => {
-        changed = true;
-        html += `<span style="font-size:${size};color:${COLOR};">${escapeHtml(txt)}</span>`;
-      };
-      for (const ch of src) {
-        if (depth > 0) {
-          wrap(ch);
-          if (CLOSE.includes(ch)) depth--;
-          continue;
-        }
-        if (OPEN.includes(ch)) {
-          flushPlain();
-          depth = 1;
-          touched++;
-          wrap(ch);
-          continue;
-        }
-        plain += ch;
-      }
-      flushPlain();
-      if (changed) p.innerHTML = html;
-    });
-    return touched;
+  function countBracketGroupsInText(src) {
+    let n = 0;
+    for (const ch of String(src || '')) if (BR_OPEN.indexOf(ch) !== -1) n++;
+    return n;
   }
   
   // 正文编辑：常驻在右栏底部，不再弹窗
@@ -2940,7 +3158,6 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     // 重新排版后段落是新建的，题记范围会丢，按当前题记列数重新套用（自动分段/标点替换同理）
     const epgCount = getEpigraphCount();
     if (epgCount > 0) applyEpigraphFormat();
-    if (bracketShrinkOn) { try { applyBracketShrink(); } catch (e) {} }
     showToast('✅ 预览已更新', 1200);
   }
 
@@ -2951,6 +3168,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   cancelEditBtn.onclick = () => {
     bodyTextarea.value = initialBodyText;
     window.editedText = null;
+    // 还原＝回到未缩括号的状态，胶囊里的「缩」也要复位
+    bracketShrinkOn = false;
+    const shrinkSegEl = document.getElementById('fj-shrink-brackets');
+    if (shrinkSegEl) { shrinkSegEl.style.background = 'transparent'; shrinkSegEl.style.color = '#334155'; }
     renderVerticalContent(initialBodyText, false);
     autoResizeBody();
     showToast('📝 已还原', 1200);
@@ -4334,10 +4555,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     const shrinkBracketsBtn = document.getElementById('fj-shrink-brackets');
     if (shrinkBracketsBtn) {
       shrinkBracketsBtn.addEventListener('click', () => {
-        const n = applyBracketShrink();
+        const n = countBracketGroupsInText(window.editedText || text);
         if (!n) { showToast('未找到括号内容', 1500); return; }
         bracketShrinkOn = true;
         setBracketSegActive(true);
+        renderVerticalContent(window.editedText || text, false);
+        const epgCount = getEpigraphCount();
+        if (epgCount > 0) applyEpigraphFormat();
         schedulePreviewPages();
         showToast(`已把 ${n} 处括号缩为小字夹注`, 1500);
       });
@@ -4383,9 +4607,49 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     catch { showToast('❌ 复制失败', 1500); }
   });
 
+  // 导出用文件名：连续采集多块时，标题取各块标题拼接（·分隔）；
+  // 作者只有所有块都一样才带上，不同则不带；总长不超过 50 字
+  function buildExportName() {
+    const titleVal = (titleInput.value || '').trim();
+    const subtitleVal = (subtitleInput.value || '').trim();
+    const src = window.editedText || text || '';
+    const titles = [];
+    const authors = [];
+    src.split('\n').forEach((line) => {
+      if (line.charAt(0) !== TITLE_LINE_MARK) return;
+      let rest = line.slice(1);
+      let t = rest;
+      let a = '';
+      const idx = rest.indexOf(AUTHOR_LINE_MARK);
+      if (idx >= 0) { t = rest.slice(0, idx); a = rest.slice(idx + 1); }
+      t = t.trim();
+      a = a.trim();
+      if (t) titles.push(t);
+      authors.push(a);
+    });
+    let name = '';
+    let author = '';
+    if (titles.length) {
+      name = titles.join('；');
+      const nonEmpty = authors.filter(a => a);
+      if (nonEmpty.length) {
+        // 作者全同 → 直接用；不同（或有缺）→ 取第一个再加「等」
+        const allSame = authors.every(a => a && a === authors[0]);
+        author = allSame ? authors[0] : (nonEmpty[0] + '等');
+      }
+    } else {
+      name = titleVal;
+      author = subtitleVal;
+    }
+    if (author) name = name ? `${name} ${author}` : author;
+    name = name.replace(/[\\/:*?"<>|\n\r\t]/g, '-').replace(/-+/g, '-').trim();
+    if (!name) name = '无标题';
+    return name.slice(0, 50);
+  }
+
   // 监听打印图片事件
   document.getElementById('fj-print-image')?.addEventListener('click', async () => {
-    const titleValue = titleInput.value + ' ' + subtitleInput.value;
+    const titleValue = buildExportName();
   
     // 在打印前获取并保存自动关闭状态
     const checkbox = document.getElementById('fj-auto-close');
@@ -4410,7 +4674,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
 
   // 监听下载图片事件
   document.getElementById('fj-download-image')?.addEventListener('click', async () => {
-    const titleValue = titleInput.value + ' ' + subtitleInput.value;
+    const titleValue = buildExportName();
 
     const checkbox = document.getElementById('fj-auto-close');
     const shouldAutoClose = checkbox ? checkbox.checked : false;
@@ -4523,7 +4787,8 @@ function autoSplitParagraphs(src) {
       }
     }
     i = j - 1;
-    if (j < s.length && s[j] !== '\n') {
+    // 不在标题/作者行标记前断行（否则新段首行会被当成标题行）
+    if (j < s.length && s[j] !== '\n' && s[j] !== TITLE_LINE_MARK && s[j] !== AUTHOR_LINE_MARK) {
       out += '\n';
       added++;
     }
@@ -4628,24 +4893,49 @@ function activateMode() {
     document.addEventListener('mouseout', onMouseOut);
     document.addEventListener('click', onClickHandler, true);
     document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keyup', onKeyUp);
     
     const modeHint = smartMode
       ? '智能模式：第1行→标题，第2行→作者，其余→正文'
       : '手动模式：先选中标题/作者，再点击要提取的 DIV';
-    showToast(`🎯 进入选择模式，${modeHint}，按 ESC 退出`, 2000);
+    showToast(`🎯 进入选择模式，${modeHint}；按住 Ctrl 可连续点选多块，按 ESC 退出`, 2200);
   });
 }
 
-function onKeyDown(event) { if (event.key === 'Escape') cancelMode(); }
+function onKeyDown(event) {
+  if (event.key === 'Escape') {
+    resetCollect();
+    cancelMode();
+    return;
+  }
+  // 按住 Ctrl：进入连续采集（松开时提示确认）
+  if (event.key === 'Control' && isSelectionMode) {
+    if (isCtrlHeld) return;      // 长按会重复触发
+    isCtrlHeld = true;
+    setCollectBar(false);
+  }
+}
+
+function onKeyUp(event) {
+  if (event.key !== 'Control') return;
+  if (!isCtrlHeld) return;
+  isCtrlHeld = false;
+  if (!isSelectionMode) return;
+  if (collectedBlocks.length) setCollectBar(true);
+  else hideCollectBar();
+}
 
 function cancelMode() {
   if (!isSelectionMode) return;
   isSelectionMode = false;
+  isCtrlHeld = false;
   document.removeEventListener('mouseover', onMouseOver);
   document.removeEventListener('mouseout', onMouseOut);
   document.removeEventListener('click', onClickHandler, true);
   document.removeEventListener('keydown', onKeyDown);
+  document.removeEventListener('keyup', onKeyUp);
   clearHighlight();
+  hideCollectBar();
   //showToast('🔴 选择模式已关闭', 1200);
 }
 
