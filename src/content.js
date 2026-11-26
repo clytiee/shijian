@@ -2120,7 +2120,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   layoutToolbar.innerHTML = `
     <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: 1 1 100%;">
       <span class="fj-card-title" style="flex: 0 1 auto;">版面</span>
-      <button id="fj-layout-reset" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;">重置</button>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <button id="fj-layout-undo" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1; opacity: 0.45;" title="回退到重置前的版面" disabled>回退</button>
+        <button id="fj-layout-reset" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;">重置</button>
+      </div>
     </div>
     <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 8px; flex: 1 1 100%;">
       <span class="fj-side-label" style="line-height: 26px;">纸张 尺寸</span>
@@ -2842,6 +2845,53 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     
     showToast(`🧽 已清理 ${removedCount} 处括号，移除 ${removedChars} 个字符`, 2000);
   }
+
+  // ========== 括号 · 缩：不删内容，把括号（含内容）排成小字夹注 ==========
+  // 字号 = 正文字号的一半，颜色深蓝；重新渲染后会自动再套一次
+  // 逐列扫描而不是逐段配对：括号跨列被切断（开括号在这一列、收括号在下一列）也能缩到
+  let bracketShrinkOn = false;
+
+  function applyBracketShrink() {
+    const verticalContentDiv = contentArea.querySelector('.vertical-content');
+    if (!verticalContentDiv) return 0;
+    const size = (currentFontSize / 2) + 'pt';
+    const COLOR = '#1e3a8a';
+    const OPEN = '（(【[｛{〔〖〈';
+    const CLOSE = '）)】]｝}〕〗〉';
+    let depth = 0;
+    let touched = 0;
+    verticalContentDiv.querySelectorAll('.vertical-paragraph').forEach((p) => {
+      if (p.classList.contains('epigraph')) { depth = 0; return; }   // 题记本身已是小字，跳过
+      const src = p.textContent || '';
+      if (!src) return;
+      let html = '';
+      let plain = '';
+      let changed = false;
+      const flushPlain = () => { if (plain) { html += escapeHtml(plain); plain = ''; } };
+      const wrap = (txt) => {
+        changed = true;
+        html += `<span style="font-size:${size};color:${COLOR};">${escapeHtml(txt)}</span>`;
+      };
+      for (const ch of src) {
+        if (depth > 0) {
+          wrap(ch);
+          if (CLOSE.includes(ch)) depth--;
+          continue;
+        }
+        if (OPEN.includes(ch)) {
+          flushPlain();
+          depth = 1;
+          touched++;
+          wrap(ch);
+          continue;
+        }
+        plain += ch;
+      }
+      flushPlain();
+      if (changed) p.innerHTML = html;
+    });
+    return touched;
+  }
   
   // 正文编辑：常驻在右栏底部，不再弹窗
   const initialBodyText = windowEditedText || text;
@@ -2859,7 +2909,10 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         <button id="fj-body-max" style="height: 22px; width: 22px; padding: 0; font-size: 12px; line-height: 1;" title="最大化编辑">⤢</button>
         <button id="fj-auto-split" style="height: 22px; width: 22px; padding: 0; font-size: 12px; line-height: 1;" title="自动分段：句号、叹号、问号后断行（每句一列）">¶</button>
         <button id="fj-vertical-punct" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;" title="把标点换成竖排（古籍）用法：书名号→「」、引号→「」『』、半角→全角">竖排标点</button>
-        <button id="fj-clean-brackets" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;" title="清理括号及其内容">清括号</button>
+        <span id="fj-bracket-seg" style="display: inline-flex; align-items: stretch; height: 22px; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background: #fff; box-sizing: border-box;">
+          <button id="fj-clean-brackets" style="height: 100%; padding: 0 9px; margin: 0; font-size: 11px; line-height: 1; border: none; background: transparent; border-radius: 0; cursor: pointer; color: #334155;" title="括号 · 清：清理括号及其内容">括号 清</button>
+          <button id="fj-shrink-brackets" style="height: 100%; padding: 0 9px; margin: 0; font-size: 11px; line-height: 1; border: none; border-left: 1px solid #e2e8f0; background: transparent; border-radius: 0; cursor: pointer; color: #334155;" title="括号 · 缩：保留括号内容，字号缩为正文一半、颜色改深蓝（古籍小字夹注）">缩</button>
+        </span>
         <button id="fj-cancel-edit" style="height: 22px; padding: 0 8px; font-size: 11px; line-height: 1;">还原</button>
       </div>
     </div>
@@ -2887,6 +2940,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     // 重新排版后段落是新建的，题记范围会丢，按当前题记列数重新套用（自动分段/标点替换同理）
     const epgCount = getEpigraphCount();
     if (epgCount > 0) applyEpigraphFormat();
+    if (bracketShrinkOn) { try { applyBracketShrink(); } catch (e) {} }
     showToast('✅ 预览已更新', 1200);
   }
 
@@ -3748,7 +3802,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         const entries = [];
         groups.forEach((g) => {
           if (g.label) entries.push({ type: 'head', label: g.label, withEnToggle: !!g.withEnToggle });
-          g.list.forEach(n => entries.push({ type: 'font', name: n }));
+          g.list.forEach(n => entries.push({ type: 'font', name: n, showDel: g.label === '最近使用' }));
         });
         // 「全部字体」页入口挂在第一个分组标题上（通常是“收藏”那一行最右）
         const firstHead = entries.find(e => e.type === 'head');
@@ -3771,13 +3825,14 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
             : '';
           return `<div style="padding: ${(4 * s).toFixed(1)}px ${padX}px ${(3 * s).toFixed(1)}px; font-size: ${fHead}px; color: #94a3b8; background: #f8fafc; border-top: 1px solid #eef2f7; border-bottom: 1px solid #eef2f7; display: flex; align-items: center; justify-content: space-between; gap: 8px;"><span>${label}</span><span style="display: flex; align-items: center; gap: 10px;">${allLink}${enToggle}</span></div>`;
         };
-        const itemHtml = (n) => {
+        const itemHtml = (n, showDel) => {
           const cssName = "'" + String(n).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
           const disp = fontDisplayName(n);
           const isFav = favoriteFonts.includes(n);
           const isRecent = recentFonts.includes(n);
           const star = `<span class="fj-fav" data-font="${esc(n)}" title="${isFav ? '取消收藏' : '收藏'}" style="flex: 0 0 auto; padding: 0 4px; font-size: ${fStar}px; line-height: 1; cursor: pointer; color: ${isFav ? '#d97706' : '#94a3b8'}; display: ${isFav ? 'inline-block' : 'none'};">${isFav ? '★' : '☆'}</span>`;
-          const delBtn = isRecent
+          // ✕ 只在「最近使用」分组里出现（收藏/全部字体分组不显示）
+          const delBtn = (showDel && isRecent)
             ? `<span class="fj-recent-del" data-font="${esc(n)}" title="从最近使用中移除" style="flex: 0 0 auto; padding: 0 4px; color: #94a3b8; font-size: ${fDel}px; cursor: pointer;">✕</span>`
             : '';
           return `<div class="fj-font-item" data-font="${esc(n)}" style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: ${padY}px ${padX}px; cursor: pointer; white-space: nowrap; overflow: hidden;">
@@ -3874,7 +3929,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           const chunk = entries.slice(renderedCount, renderedCount + CHUNK);
           renderedCount += chunk.length;
           const tmp = document.createElement('div');
-          tmp.innerHTML = chunk.map(e => e.type === 'head' ? headHtml(e.label, e.withEnToggle, e.withAllLink) : itemHtml(e.name)).join('');
+          tmp.innerHTML = chunk.map(e => e.type === 'head' ? headHtml(e.label, e.withEnToggle, e.withAllLink) : itemHtml(e.name, e.showDel)).join('');
           bindChunk(tmp);
           while (tmp.firstChild) fontPanel.appendChild(tmp.firstChild);
           // 一屏还没填满就继续追加
@@ -4076,10 +4131,72 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       }
     }
 
-    // 版面重置：纸张、方向、字号、行距全部恢复默认
+    // 版面重置：纸张、方向、字号、行距全部恢复默认；重置前先存一份快照给「回退」用
+    let layoutSnapshot = null;
+    const setUndoBtnEnabled = (on) => {
+      const btn = document.getElementById('fj-layout-undo');
+      if (!btn) return;
+      btn.disabled = !on;
+      btn.style.opacity = on ? '1' : '0.45';
+      btn.style.cursor = on ? 'pointer' : 'default';
+    };
+    const takeLayoutSnapshot = () => ({
+      paperSize: currentPaperSize,
+      layoutMode: (document.querySelector('input[name="layout-mode"]:checked') || {}).value || 'portrait',
+      fontSize: currentFontSize,
+      fontFamily: currentFontFamily,
+      lineHeight: currentLineHeight,
+      marginMm: currentMarginMm,
+      gutterMm: currentGutterMm,
+      letterSpacing: currentLetterSpacing,
+      antiquePaper: currentAntiquePaper,
+      antiqueFrame: currentAntiqueFrame,
+      frameFullPage: currentFrameFullPage,
+      frameRough: currentFrameRough,
+      pageNumber: currentPageNumber,
+      pageNumberMirror: currentPageNumberMirror
+    });
+    // 按快照逐个控件恢复（都走各自的 change/apply 逻辑，保证界面与渲染同步）
+    const restoreLayoutSnapshot = (snap) => {
+      if (!snap) return;
+      const paperSel = document.getElementById('fj-paper-size');
+      if (paperSel && paperSel.value !== snap.paperSize) {
+        paperSel.value = snap.paperSize;
+        paperSel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const radio = document.querySelector(`input[name="layout-mode"][value="${snap.layoutMode}"]`);
+      if (radio && !radio.checked) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (typeof applyFontSize === 'function') applyFontSize(snap.fontSize, true);
+      if (typeof applyFontFamily === 'function') applyFontFamily(snap.fontFamily, true);
+      updateLineHeight(snap.lineHeight);
+      if (typeof applyMargin === 'function') applyMargin(snap.marginMm, true);
+      if (typeof applyGutter === 'function') applyGutter(snap.gutterMm, true);
+      if (typeof applyLetterSpacing === 'function') applyLetterSpacing(snap.letterSpacing, true);
+      const toggleTo = (id, want) => {
+        const el = document.getElementById(id);
+        if (!el || el.checked === want) return;
+        el.checked = want;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      toggleTo('fj-antique-paper', snap.antiquePaper);
+      toggleTo('fj-antique-frame', snap.antiqueFrame);
+      toggleTo('fj-frame-fullpage', snap.frameFullPage);
+      toggleTo('fj-frame-rough', snap.frameRough);
+      toggleTo('fj-page-number', snap.pageNumber);
+      toggleTo('fj-page-number-mirror', snap.pageNumberMirror);
+      renderVerticalContent(window.editedText || text, false);
+      const epgCount = getEpigraphCount();
+      if (epgCount > 0) applyEpigraphFormat();
+      schedulePreviewPages();
+    };
     const layoutResetBtn = document.getElementById('fj-layout-reset');
     if (layoutResetBtn) {
       layoutResetBtn.onclick = () => {
+        layoutSnapshot = takeLayoutSnapshot();   // 只保留最近一次重置前的版面
+        setUndoBtnEnabled(true);
         const paperSel = document.getElementById('fj-paper-size');
         if (paperSel) {
           paperSel.value = 'A5';
@@ -4149,6 +4266,18 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         showToast('版面已重置', 1200);
       };
     }
+    // 回退：恢复到最近一次「重置」之前的版面
+    const layoutUndoBtn = document.getElementById('fj-layout-undo');
+    if (layoutUndoBtn) {
+      layoutUndoBtn.onclick = () => {
+        if (!layoutSnapshot) { showToast('没有可回退的版面', 1500); return; }
+        const snap = layoutSnapshot;
+        layoutSnapshot = null;
+        setUndoBtnEnabled(false);
+        restoreLayoutSnapshot(snap);
+        showToast('已回退到重置前的版面', 1200);
+      };
+    }
 
     // 行距按钮
     if (!applyBtn) {
@@ -4186,10 +4315,31 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
       });
     }
     // 清理括号及内容
+    // 括号胶囊：括号 清 | 缩
+    const setBracketSegActive = (active) => {
+      const shrinkEl = document.getElementById('fj-shrink-brackets');
+      if (!shrinkEl) return;
+      shrinkEl.style.background = active ? '#1e3a8a' : 'transparent';
+      shrinkEl.style.color = active ? '#fff' : '#334155';
+    };
     const cleanBracketsBtn = document.getElementById('fj-clean-brackets');
     if (cleanBracketsBtn) {
       cleanBracketsBtn.addEventListener('click', () => {
+        bracketShrinkOn = false;    // 清理后不再保留小字夹注
+        setBracketSegActive(false);
         cleanBracketsAndContent();
+      });
+    }
+    // 括号 · 缩：保留括号内容，缩成正文一半字号、深蓝色夹注
+    const shrinkBracketsBtn = document.getElementById('fj-shrink-brackets');
+    if (shrinkBracketsBtn) {
+      shrinkBracketsBtn.addEventListener('click', () => {
+        const n = applyBracketShrink();
+        if (!n) { showToast('未找到括号内容', 1500); return; }
+        bracketShrinkOn = true;
+        setBracketSegActive(true);
+        schedulePreviewPages();
+        showToast(`已把 ${n} 处括号缩为小字夹注`, 1500);
       });
     }
     // 自动分段：句末标点后断行
@@ -4302,14 +4452,83 @@ function escapeHtml(str) {
 
 // 自动分段：在句末标点（。！？）后断行，若句末跟着收尾引号/括号，标点断在其后
 // 已有换行不受影响，不新增空行（换行即一列，古籍竖排习惯每句一列）
+// 1) 括号内的内容不分段（（）() 【】[] ｛｝{} 按深度跳过）
+// 2) 句末标点后紧跟的括号夹注（含隔空白的、连续多组的）并回本段，断行放到夹注之后；
+//    括号配不上时宁可不在此断行，也不让括号单独成段
 function autoSplitParagraphs(src) {
-  let s = String(src || '').replace(/\r\n?/g, '\n');
+  const s = String(src || '').replace(/\r\n?/g, '\n');
+  const OPEN = '（(【[｛{〔〖〈';
+  const CLOSE = '）)】]｝}〕〗〉';
+  const PAIR = { '（': '）', '(': ')', '【': '】', '[': ']', '｛': '｝', '{': '}', '〔': '〕', '〖': '〗', '〈': '〉' };
+  const TAIL = '」』”’"\'';
+  const SENT = '。！？';
+  const isSpace = (c) => c === ' ' || c === '\t' || c === '\u3000' || c === '\u00a0';
+  let out = '';
   let added = 0;
-  s = s.replace(/([。！？]+[」』）】︾〉”’"']*)([^\n])/g, (m, punct, next) => {
-    added++;
-    return punct + '\n' + next;
-  });
-  return { text: s, added };
+  let depth = 0;
+  // 从 start 处的开括号读到配对的收尾括号，返回结束位置（不含），不配对返回 -1
+  const readGroupEnd = (start) => {
+    const stack = [];
+    for (let k = start; k < s.length; k++) {
+      const c = s[k];
+      if (OPEN.includes(c)) stack.push(PAIR[c]);
+      else if (CLOSE.includes(c)) {
+        if (stack.length && stack[stack.length - 1] === c) {
+          stack.pop();
+          if (!stack.length) return k + 1;
+        }
+      }
+    }
+    return -1;
+  };
+  // 从句末标点后 j 起收集夹注：允许中间夹空白、允许连续多组，每组后连同其后的句末标点/引号一起收
+  // 返回 { text, j }；连第一组都配不上时返回 null
+  const collectTrailingNotes = (start) => {
+    let j = start;
+    let text = '';
+    let got = false;
+    while (true) {
+      let k = j;
+      while (k < s.length && isSpace(s[k])) k++;
+      if (k >= s.length || !OPEN.includes(s[k])) return { text, j };
+      const end = readGroupEnd(k);
+      if (end < 0) return got ? { text, j } : null;
+      text += s.slice(k, end);
+      got = true;
+      j = end;
+      while (j < s.length && (SENT.includes(s[j]) || TAIL.includes(s[j]))) { text += s[j]; j++; }
+    }
+  };
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    out += ch;
+    if (OPEN.includes(ch)) { depth++; continue; }
+    if (CLOSE.includes(ch)) { if (depth > 0) depth--; continue; }
+    if (depth > 0 || ch === '\n' || !SENT.includes(ch)) continue;
+    // 吞掉紧跟的句末标点与收尾引号
+    let j = i + 1;
+    while (j < s.length && (SENT.includes(s[j]) || TAIL.includes(s[j]))) { out += s[j]; j++; }
+    // 后面紧跟括号夹注：整组并回本段，断行挪到夹注之后
+    let k = j;
+    while (k < s.length && isSpace(s[k])) k++;
+    if (k < s.length && OPEN.includes(s[k])) {
+      const notes = collectTrailingNotes(k);
+      if (notes) {
+        out += notes.text;
+        j = notes.j;
+        while (j < s.length && isSpace(s[j])) j++;
+      } else {
+        i = j - 1;                     // 括号不配对：此处不断行，避免夹注被单独成段
+        continue;
+      }
+    }
+    i = j - 1;
+    if (j < s.length && s[j] !== '\n') {
+      out += '\n';
+      added++;
+    }
+  }
+  return { text: out, added };
 }
 
 // 把标点换成竖排（古籍）写法：
