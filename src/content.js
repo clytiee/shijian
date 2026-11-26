@@ -1697,6 +1697,54 @@ function measureMaxCharsPerColumn(innerHpx, fontSize = '14pt', lineHeight = 1.5)
   return best;
 }
 
+// 按“真实文字”逐列测量切分：每列取从当前位置起最长的一段，保证渲染高度不超过 maxHpx。
+// templateEl 传入时直接拿它的克隆当量尺，样式（字体、字号、行距、外边距）与最终渲染完全一致，
+// 这样测出来的列高就不会和真实列差一两个像素。
+function splitTextByVerticalHeight(text, fontSize, lineHeight, maxHpx, templateEl) {
+  let probe;
+  if (templateEl && templateEl.parentNode) {
+    probe = templateEl.cloneNode(false);
+    probe.className = templateEl.className;
+    probe.style.cssText = (templateEl.getAttribute('style') || '') +
+      ';position:absolute;left:-9999px;top:0;visibility:hidden;';
+    templateEl.parentNode.appendChild(probe);
+  } else {
+    const fam = `'${typeof currentFontFamily !== 'undefined' ? currentFontFamily : '方正金陵'}','FZJinL-B_GBJF','华文楷书','KaiTi','宋体',serif`;
+    probe = document.createElement('div');
+    probe.style.cssText = `position:absolute;left:-9999px;top:0;writing-mode:vertical-rl;text-orientation:upright;white-space:pre;font-size:${fontSize};line-height:${lineHeight};letter-spacing:${typeof currentLetterSpacing !== 'undefined' ? currentLetterSpacing : 0}px;font-family:${fam};margin:0;padding:0;border:0;`;
+    document.body.appendChild(probe);
+  }
+  const fits = (s) => {
+    probe.textContent = s;
+    return probe.getBoundingClientRect().height <= maxHpx;
+  };
+  const out = [];
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    // 单字都放不下时也必须前进，避免死循环
+    let best = 1;
+    if (fits(text.slice(i, i + 1))) {
+      let lo = 1, hi = n - i;
+      while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (fits(text.slice(i, i + mid))) { best = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+    }
+    let end = i + best;
+    // 尽量把句读带在上一列，避免标点单独成列
+    while (end < n && COLUMN_PUNCT.indexOf(text[end]) !== -1) {
+      probe.textContent = text.slice(i, end + 1);
+      if (probe.getBoundingClientRect().height > maxHpx) break;
+      end++;
+    }
+    out.push(text.slice(i, end));
+    i = end;
+  }
+  probe.remove();
+  return out;
+}
+
 function getMaxColumnsPerPage(paperSize) {
   // 返回每页最大列数（A5约17，A4约34）
   return paperSize === 'A5' ? 18 : 36;
@@ -1961,7 +2009,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         vertical-align: top;
         transition: line-height 0.1s ease;
       }
-      .vertical-paragraph.epigraph { font-size: 10pt !important; }
+      /* 题记字号 = 正文字号的 2/3，由 applyEpigraphFormat 写入 inline style */
       .vertical-paragraph.compact { margin: 0 0; }
       
       .vertical-content {
@@ -2483,13 +2531,34 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     oldEpigraphCount = columnsToReplace.length;
     console.log(`[DEBUG] 题记范围共 ${columnsToReplace.length} 列，合并后 ${epigraphText.length} 字`);
     
-    // 按 50 字重新拆分
-    const maxCharsEpigraph = 50;
-    const epigraphColumns = sliceColumnText(epigraphText, maxCharsEpigraph);
+    // 按题记字号（正文 2/3）、当前行距直接实测真实文字的分列位置：每列顶到列底
+    const epigraphFontPt = currentFontSize * 2 / 3;
+    const columnHpx = getColumnHeightPx(currentPaperSize, layoutMode);
+    // 用真实的题记段落当量尺（样式与最终渲染一致，避免量尺偏高/偏低一两个字）
+    const epigraphRuler = document.createElement('div');
+    epigraphRuler.className = 'vertical-paragraph epigraph';
+    epigraphRuler.style.lineHeight = currentLineHeight;
+    epigraphRuler.style.fontSize = epigraphFontPt + 'pt';
+    verticalContentDiv.appendChild(epigraphRuler);
+    let epigraphColumns = splitTextByVerticalHeight(
+      epigraphText, epigraphFontPt + 'pt', Math.max(1, currentLineHeight), columnHpx - 3, epigraphRuler);
+    epigraphRuler.remove();
+    const capChars = epigraphColumns.reduce((m, c) => Math.max(m, c.length), 0);
+    // 只有最后一列“只剩一两个字”时才改成均分（避免出现一条窄列）；
+    // 否则按满列切，前面各列都顶到列底，末列有剩多少算多少
+    if (epigraphColumns.length > 1 && capChars > 2) {
+      const lastLen = epigraphColumns[epigraphColumns.length - 1].length;
+      if (lastLen <= 4) {
+        const nCols = epigraphColumns.length;
+        const per = Math.max(1, Math.ceil(epigraphText.length / nCols));
+        epigraphColumns = sliceColumnText(epigraphText, Math.min(per, capChars));
+      }
+    }
+    const maxCharsEpigraph = epigraphColumns.reduce((m, c) => Math.max(m, c.length), 0);
     const newColumnCount = epigraphColumns.length;
     
     if (oldEpigraphCount > 1) {
-        console.log(`[DEBUG] 重新拆分为 ${newColumnCount} 列（50字/列）`);
+        console.log(`[DEBUG] 重新拆分为 ${newColumnCount} 列（${maxCharsEpigraph}字/列）`);
         
         // 创建新列
         const newColumns = [];
@@ -2499,6 +2568,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
           newDiv.innerText = colText;
           newDiv.originalText = colText;
           newDiv.style.lineHeight = currentLineHeight;
+          newDiv.style.fontSize = (currentFontSize * 2 / 3) + 'pt';   // 题记字号 = 正文字号的 2/3
           newColumns.push(newDiv);
         }
         
@@ -2536,12 +2606,13 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
         const finalEpigraphCount = parent.querySelectorAll('.vertical-paragraph.epigraph').length;
         console.log(`[DEBUG] 题记列数量变化: ${columnsToReplace.length} 列 → ${newColumns.length} 列`);
         
-        showToast(`📜 已应用题记：标题列后 ${count} 列合并为 ${newColumns.length} 列（50字/列）`, 2000);
+        showToast(`📜 已应用题记：标题列后 ${count} 列合并为 ${newColumns.length} 列（${maxCharsEpigraph}字/列）`, 2000);
       } else {
           console.log(`[DEBUG] 题记1列，无需合并`);
              for (let i = startIndex; i <= endIndex; i++) {
               if (allParagraphs[i]) {
                 allParagraphs[i].classList.add('epigraph');
+                allParagraphs[i].style.fontSize = (currentFontSize * 2 / 3) + 'pt';
                 console.log(`[DEBUG] ✅ 段落 ${i} 已添加 epigraph 类`);
               }
             }
@@ -2589,6 +2660,7 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     for (let i = startIndex; i <= endIndex; i++) {
       if (allParagraphs[i]) {
         allParagraphs[i].classList.add('epigraph');
+        allParagraphs[i].style.fontSize = (currentFontSize * 2 / 3) + 'pt';
       }
     }
     
@@ -2812,6 +2884,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     }
     window.editedText = val;
     renderVerticalContent(val, false);
+    // 重新排版后段落是新建的，题记范围会丢，按当前题记列数重新套用（自动分段/标点替换同理）
+    const epgCount = getEpigraphCount();
+    if (epgCount > 0) applyEpigraphFormat();
     showToast('✅ 预览已更新', 1200);
   }
 
