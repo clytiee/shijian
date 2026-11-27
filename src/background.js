@@ -75,11 +75,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   // 历史页：把某条记录打开成预览面板（有原网页 URL 就把那个网页打开）
+  // 原网页无法访问时不擅自换网页，只回 reason='load-failed'，由历史页问用户要不要换个网页开
   if (request.action === 'OPEN_HISTORY_IN_PAGE') {
     (async () => {
       const rec = request.record || {};
       const ok = await openRecordAnywhere(rec);
-      sendResponse({ success: ok, url: rec.url || '' });
+      sendResponse({ success: ok, url: rec.url || '', reason: ok ? '' : 'load-failed' });
+    })();
+    return true;
+  }
+
+  // 历史页：用户确认「在其他标签页打开预览」后走这里（用最近的普通网页）
+  if (request.action === 'OPEN_HISTORY_ANYWAY') {
+    (async () => {
+      const rec = request.record || {};
+      const tabId = await getContentTabId();
+      if (!tabId) { sendResponse({ success: false, reason: 'no-tab' }); return; }
+      try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
+      const ok = await sendHistoryRecord(tabId, rec);
+      sendResponse({ success: ok, tabId, reason: ok ? '' : 'inject-failed' });
     })();
     return true;
   }
@@ -279,8 +293,9 @@ async function waitTabComplete(tabId, timeoutMs = 12000) {
 }
 
 // 某条记录该在哪个标签页里打开：
-//  1) 记录里存了原网页 URL → 找准那个网页（已开着就切过去，没开就新开一个），等加载完再注入
-//  2) 没有 URL 或 URL 不能注入（chrome://、edge:// 等）→ 退回最近那个普通网页
+//  1) 记录里存了原网页 URL → 找寻那个网页（已开着就切过去，没开就新开一个），等加载完再注入；
+//     原网页无法访问时：关掉刚新建的空标签，直接返回失败，绝不改到别的网页去开预览
+//  2) 没有 URL 或 URL 不能注入（chrome://、edge:// 等）→ 也不乱开网页，直接失败
 async function openRecordAnywhere(rec, preferTabId) {
   // 右键菜单是在某个页面点的：优先就在这个页面里开
   if (preferTabId) {
@@ -288,28 +303,33 @@ async function openRecordAnywhere(rec, preferTabId) {
     if (await sendHistoryRecord(preferTabId, rec)) return true;
   }
   const injectable = (u) => /^(http|https|file):\/\//.test(String(u || ''));
-  if (injectable(rec.url)) {
-    let tab = null;
+  if (!injectable(rec.url)) return false;
+  let tab = null;
+  let created = false;
+  try {
+    const tabs = await chrome.tabs.query({});
+    tab = tabs.find((t) => t && t.url === rec.url) || null;
+  } catch (e) {}
+  if (!tab) {
     try {
-      const tabs = await chrome.tabs.query({});
-      tab = tabs.find((t) => t && t.url === rec.url) || null;
+      tab = await chrome.tabs.create({ url: rec.url, active: true });
+      created = true;
     } catch (e) {}
-    if (!tab) {
-      try { tab = await chrome.tabs.create({ url: rec.url, active: true }); } catch (e) {}
-    } else {
-      try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
-    }
-    if (tab && tab.id) {
-      rememberContentTab(tab.id);
-      await waitTabComplete(tab.id);
-      await new Promise((r) => setTimeout(r, 200));   // 给 content script 一点就位时间
-      return sendHistoryRecord(tab.id, rec);
-    }
+  } else {
+    try { await chrome.tabs.update(tab.id, { active: true }); } catch (e) {}
   }
-  const tabId = await getContentTabId();
-  if (!tabId) return false;
-  try { await chrome.tabs.update(tabId, { active: true }); } catch (e) {}
-  return sendHistoryRecord(tabId, rec);
+  if (!tab || !tab.id) return false;
+  rememberContentTab(tab.id);
+  const loaded = await waitTabComplete(tab.id);
+  await new Promise((r) => setTimeout(r, 200));   // 给 content script 一点就位时间
+  if (!loaded) {
+    if (created) { try { await chrome.tabs.remove(tab.id); } catch (e) {} }
+    return false;
+  }
+  if (await sendHistoryRecord(tab.id, rec)) return true;
+  // 页面能开但注入不进去（错误页、登录跳转、受限页）：新建的标签页收掉，不换别的网页
+  if (created) { try { await chrome.tabs.remove(tab.id); } catch (e) {} }
+  return false;
 }
 
 // 把一条历史记录发到指定标签页（没注入 content script 时先注入）

@@ -128,10 +128,19 @@ listEl.addEventListener('click', (ev) => {
     if (!rec) return;
     chrome.runtime.sendMessage({ action: 'OPEN_HISTORY_IN_PAGE', record: rec }, (resp) => {
       if (chrome.runtime.lastError || !resp || !resp.success) {
-        showToast('打开失败：原网页可能不允许注入插件，可改用「复制全文」');
+        // 原网页无法访问：让用户决定要不要换个网页开预览
+        if (!window.confirm('原网页无法访问，是否改在其他标签页打开预览？')) return;
+        chrome.runtime.sendMessage({ action: 'OPEN_HISTORY_ANYWAY', record: rec }, (r2) => {
+          if (chrome.runtime.lastError || !r2 || !r2.success) {
+            const why = r2 && r2.reason === 'no-tab' ? '没有可用的普通网页标签页' : '那个页面也注入不进去';
+            showToast(`${why}，可用「复制全文」`);
+            return;
+          }
+          showToast('已在其他标签页中打开预览');
+        });
         return;
       }
-      showToast(resp.url ? '已打开原网页并填好预览' : '已在当前网页中打开预览');
+      showToast(resp.url ? '已打开原网页并填好预览' : '已打开预览');
     });
     return;
   }
