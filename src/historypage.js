@@ -1,0 +1,155 @@
+// historypage.js —— 历史记录页：列出全部记录（搜索 / 在页面中打开 / 复制 / 删除 / 清空）
+const HISTORY_KEY = 'printHistory';
+
+const listEl = document.getElementById('list');
+const countEl = document.getElementById('count');
+const qEl = document.getElementById('q');
+const clearAllBtn = document.getElementById('clear-all');
+const toastEl = document.getElementById('toast');
+
+let allRecords = [];
+let toastTimer = null;
+
+function showToast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1600);
+}
+
+function fmtTime(ts) {
+  const d = new Date(Number(ts) || Date.now());
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function load() {
+  chrome.storage.local.get([HISTORY_KEY], (r) => {
+    const list = Array.isArray(r && r[HISTORY_KEY]) ? r[HISTORY_KEY] : [];
+    allRecords = list;
+    render();
+  });
+}
+
+function save(list, cb) {
+  chrome.storage.local.set({ [HISTORY_KEY]: list }, () => {
+    const err = chrome.runtime.lastError;
+    if (err) { showToast('保存失败：' + err.message); return; }
+    allRecords = list;
+    render();
+    if (cb) cb();
+  });
+}
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function currentList() {
+  const q = (qEl.value || '').trim().toLowerCase();
+  if (!q) return allRecords.map((rec, i) => ({ rec, i }));
+  return allRecords
+    .map((rec, i) => ({ rec, i }))
+    .filter(({ rec }) => {
+      const hay = [rec.title, rec.author, rec.text].join('\n').toLowerCase();
+      return hay.includes(q);
+    });
+}
+
+function render() {
+  const items = currentList();
+  countEl.textContent = allRecords.length ? `共 ${allRecords.length} 条，显示 ${items.length} 条` : '暂无记录';
+  if (!items.length) {
+    listEl.innerHTML = `<div class="empty">${allRecords.length ? '没有匹配的记录' : '还没有历史记录：打印或下载图片时会自动记下一条'}</div>`;
+    return;
+  }
+  listEl.innerHTML = items.map(({ rec, i }) => {
+    const title = String(rec.title || '').trim() || '无标题';
+    const author = String(rec.author || '').trim();
+    const kind = rec.kind === 'download' ? '下载图片' : (rec.kind === 'print' ? '打印' : '');
+    let host = '';
+    try { host = rec.url ? new URL(rec.url).host : ''; } catch (e) { host = ''; }
+    const preview = String(rec.text || '').replace(/\s+/g, ' ').slice(0, 120);
+    return `<div class="item" data-index="${i}">
+      <div class="top">
+        <span class="title">${esc(title)}</span>
+        ${author ? `<span class="author">${esc(author)}</span>` : ''}
+        ${kind ? `<span class="tag">${esc(kind)}</span>` : ''}
+        ${host ? `<span class="tag" title="${esc(rec.url)}">${esc(host)}</span>` : ''}
+        <span class="time">${esc(fmtTime(rec.ts))}</span>
+      </div>
+      <div class="preview">${esc(preview)}${String(rec.text || '').replace(/\s+/g, ' ').length > 120 ? '…' : ''}</div>
+      <div class="ops">
+        <button class="primary act-open" data-index="${i}" title="打开这条记录保存时所在的网页，并把预览面板填好">在原网页中重开预览</button>
+        <button class="act-copy" data-index="${i}" title="复制标题、作者和正文全文">复制全文</button>
+        <span class="spacer"></span>
+        <button class="danger act-del" data-index="${i}">删除</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function getRecord(i) {
+  return allRecords[Number(i)];
+}
+
+listEl.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button');
+  if (!btn) return;
+  const i = Number(btn.dataset.index);
+
+  if (btn.classList.contains('act-open')) {
+    const rec = getRecord(i);
+    if (!rec) return;
+    chrome.runtime.sendMessage({ action: 'OPEN_HISTORY_IN_PAGE', record: rec }, (resp) => {
+      if (chrome.runtime.lastError || !resp || !resp.success) {
+        showToast('打开失败：原网页可能不允许注入插件，可改用「复制全文」');
+        return;
+      }
+      showToast(resp.url ? '已打开原网页并填好预览' : '已在当前网页中打开预览');
+    });
+    return;
+  }
+
+  if (btn.classList.contains('act-copy')) {
+    const rec = getRecord(i);
+    if (!rec) return;
+    // 复制内容 = 标题 + 作者 + 正文全文
+    const title = String(rec.title || '').trim();
+    const author = String(rec.author || '').trim();
+    const body = String(rec.text || '');
+    const head = [title, author].filter(Boolean).join('　');
+    const text = head ? `${head}\n\n${body}` : body;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => showToast('标题、作者、正文已复制'))
+        .catch(() => showToast('复制失败'));
+    } else {
+      showToast('当前环境不支持剪贴板');
+    }
+    return;
+  }
+
+  if (btn.classList.contains('act-del')) {
+    const next = allRecords.slice();
+    next.splice(i, 1);
+    save(next, () => showToast('已删除 1 条'));
+  }
+});
+
+qEl.addEventListener('input', render);
+
+clearAllBtn.addEventListener('click', () => {
+  if (!allRecords.length) { showToast('暂无记录'); return; }
+  if (!window.confirm(`确定清空全部 ${allRecords.length} 条历史记录？`)) return;
+  save([], () => showToast('历史记录已清空'));
+});
+
+// 别的窗口改了历史（比如又打印了一次），这边实时刷新
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes[HISTORY_KEY]) load();
+});
+
+load();

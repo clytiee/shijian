@@ -3,7 +3,7 @@
   "name": "元素图文·时见 | 古籍排版打印长文",
   "version": "1.0",
   "description": "点击插件图标进入选择模式，点击元素提取文字并在浮层中显示",
-  "permissions": ["activeTab", "scripting", "tabs", "contextMenus", "storage"],
+  "permissions": ["activeTab", "scripting", "tabs", "contextMenus", "storage", "unlimitedStorage"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "时见：选择元素提取文字"

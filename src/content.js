@@ -2043,6 +2043,44 @@ function getMaxColumnsPerPage(paperSize) {
   return paperSize === 'A5' ? 18 : 36;
 }
 
+// ========== 打印历史 ==========
+// 点「打印」或「下载图片」时记一条：标题、作者、正文全文、时间（存储无上限，右键菜单只列最近的若干条）
+const PRINT_HISTORY_KEY = 'printHistory';
+
+function readBodyTextForHistory() {
+  const bodyEl = document.getElementById('fj-body-text');
+  if (bodyEl && bodyEl.value) return bodyEl.value;
+  return window.editedText || windowEditedText || '';
+}
+
+function savePrintHistory(kind) {
+  try {
+    const titleEl = document.getElementById('fj-title-input');
+    const authorEl = document.getElementById('fj-subtitle-input');
+    const rec = {
+      ts: Date.now(),
+      kind: kind || '',
+      title: (titleEl && titleEl.value ? titleEl.value : '').trim(),
+      author: (authorEl && authorEl.value ? authorEl.value : '').trim(),
+      text: readBodyTextForHistory(),
+      // 记下当时那个网页，历史页重开预览时可以直接把页面打开再灌进去
+      url: (typeof location !== 'undefined' && location.href) ? location.href : '',
+      pageTitle: (typeof document !== 'undefined' && document.title) ? document.title : ''
+    };
+    if (!rec.text) return;
+    chrome.storage.local.get([PRINT_HISTORY_KEY], (r) => {
+      const list = Array.isArray(r && r[PRINT_HISTORY_KEY]) ? r[PRINT_HISTORY_KEY] : [];
+      list.unshift(rec);
+      chrome.storage.local.set({ [PRINT_HISTORY_KEY]: list }, () => {
+        const err = chrome.runtime.lastError;
+        if (err) console.warn('[History] 保存历史记录失败:', err.message);
+      });
+    });
+  } catch (e) {
+    console.error('[History] 写入历史失败:', e);
+  }
+}
+
 function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
   // 每次打开面板都从本次抓取的正文开始，清掉上一次页面的编辑/自动排版结果
   window.editedText = null;
@@ -4786,6 +4824,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     
     console.log('[DEBUG] 打印 - 重新获取的 checkbox 状态:', shouldAutoClose);
 
+    // 先记历史（点打印即算一次），再走打印
+    savePrintHistory('print');
+
     await printImage(panel, contentArea, titleValue);
 
     // 检查是否需要自动关闭
@@ -4810,6 +4851,9 @@ function showA5FloatingPanel(text, selectedTitle = '', selectedSubtitle = '') {
     
     console.log('[DEBUG] 打印 - 重新获取的 checkbox 状态:', shouldAutoClose);
     console.log('[DEBUG] 打印 - checkbox 元素:', checkbox);
+
+    // 先记历史，再导出图片
+    savePrintHistory('download');
 
     // 优先按“一页一页的真纸张”整张渲染，内容多页也不会被屏幕截断
     const done = await downloadPagesImage(pagesWrap, titleValue);
@@ -5106,6 +5150,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const msg = String(request.message || '').replace(/^[\s\u{1F300}-\u{1FAFF}\u2600-\u27BF]+/u, '');
     const icon = msg.indexOf('智能') === 0 ? TOAST_ICON_WAND : (msg.indexOf('手动') === 0 ? TOAST_ICON_CURSOR : '');
     showToast(msg, 3500, icon);
+    sendResponse({ success: true });
+  }
+  else if (request.action === 'OPEN_HISTORY_ITEM') {
+    // 右键菜单「历史记录」里的某一条：重新打开预览面板并填回标题/作者/正文
+    const rec = request.record || {};
+    if (!rec.text) {
+      sendResponse({ success: false, error: 'empty' });
+      return true;
+    }
+    if (isSelectionMode) cancelMode();
+    showA5FloatingPanel(rec.text, rec.title || '', rec.author || '');
+    showToast('已打开历史记录', 1500);
     sendResponse({ success: true });
   }
   return true;
