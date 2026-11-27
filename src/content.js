@@ -181,16 +181,19 @@ function openPanelFromText(extractedText) {
           subtitle = '';
         }
         const bodyText = lines.slice(bodyFrom).join('\n');
+        savePrintHistory('extract', { title, author: subtitle, text: bodyText });
         showA5FloatingPanel(bodyText, title, subtitle);
       } else if (lines.length === 1) {
         title = lines[0].trim();
         subtitle = '';
         showA5FloatingPanel('', title, subtitle);
       } else {
+        savePrintHistory('extract', { title, author: subtitle, text: extractedText });
         showA5FloatingPanel(extractedText, title, subtitle);
       }
     } else {
       // 手动模式：使用用户选中的文字作为标题
+      savePrintHistory('extract', { title, author: subtitle, text: extractedText });
       showA5FloatingPanel(extractedText, title, subtitle);
     }
   });
@@ -293,12 +296,14 @@ function finishCollect() {
   chrome.storage.sync.get(['smartMode'], (result) => {
     const smartMode = result.smartMode || false;
     if (!smartMode) {
+      savePrintHistory('extract', { title: savedSelectedText, author: savedSubtitleText, text: blocks.join('\n') });
       showA5FloatingPanel(blocks.join('\n'), savedSelectedText, savedSubtitleText);
       cancelMode();
       return;
     }
     if (blocks.length === 1) {
       const p = parseSmartBlock(blocks[0]);
+      savePrintHistory('extract', { title: p.title, author: p.subtitle, text: p.body || blocks[0] });
       showA5FloatingPanel(blocks[0], p.title, p.subtitle);
       cancelMode();
       return;
@@ -324,6 +329,11 @@ function finishCollect() {
       const allSame = authors.every(a => a && a === authors[0]);
       authorVal = allSame ? authors[0] : (nonEmpty[0] + '等');
     }
+    savePrintHistory('extract', {
+      title: titleVal,
+      author: authorVal,
+      text: lines.map((l) => l.replace(/[\u0001\u0002]/g, '')).join('\n')
+    });
     showA5FloatingPanel(lines.join('\n'), titleVal, authorVal);
     cancelMode();
   });
@@ -2044,8 +2054,11 @@ function getMaxColumnsPerPage(paperSize) {
 }
 
 // ========== 打印历史 ==========
-// 点「打印」或「下载图片」时记一条：标题、作者、正文全文、时间（存储无上限，右键菜单只列最近的若干条）
+// 记录标题、作者、正文全文、时间；记录时机由「历史记录页」的设置控制：
+//   historyRecordMode = ['print']（打印/下载图片） | ['extract']（提取） | 两者都选
 const PRINT_HISTORY_KEY = 'printHistory';
+const HISTORY_MODE_KEY = 'historyRecordMode';
+const HISTORY_MODE_DEFAULT = ['print'];
 
 function readBodyTextForHistory() {
   const bodyEl = document.getElementById('fj-body-text');
@@ -2053,24 +2066,82 @@ function readBodyTextForHistory() {
   return window.editedText || windowEditedText || '';
 }
 
-function savePrintHistory(kind) {
+// 长文对比太重：先算一个轻量指纹（长度 + 逐字 hash）和摘要，去重只比指纹
+function historyTextMeta(value) {
+  const s = String(value || '');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;   // djb2
+  }
+  return {
+    hash: h >>> 0,
+    len: s.length,
+    summary: s.replace(/\s+/g, ' ').trim().slice(0, 120)
+  };
+}
+
+// kind: 'print' / 'download' / 'extract'；override 可覆盖标题、作者、正文（提取时还没有面板）
+function savePrintHistory(kind, override) {
   try {
+    const bodyEl = document.getElementById('fj-body-text');
     const titleEl = document.getElementById('fj-title-input');
     const authorEl = document.getElementById('fj-subtitle-input');
-    const rec = {
-      ts: Date.now(),
-      kind: kind || '',
-      title: (titleEl && titleEl.value ? titleEl.value : '').trim(),
-      author: (authorEl && authorEl.value ? authorEl.value : '').trim(),
-      text: readBodyTextForHistory(),
-      // 记下当时那个网页，历史页重开预览时可以直接把页面打开再灌进去
-      url: (typeof location !== 'undefined' && location.href) ? location.href : '',
-      pageTitle: (typeof document !== 'undefined' && document.title) ? document.title : ''
-    };
-    if (!rec.text) return;
-    chrome.storage.local.get([PRINT_HISTORY_KEY], (r) => {
+    const fromPanel = !!(bodyEl || titleEl || authorEl);
+    const text = (override && override.text != null)
+      ? String(override.text)
+      : (fromPanel ? readBodyTextForHistory() : '');
+    if (!text) return;
+    const title = (override && override.title != null)
+      ? String(override.title).trim()
+      : (titleEl && titleEl.value ? titleEl.value.trim() : '');
+    const author = (override && override.author != null)
+      ? String(override.author).trim()
+      : (authorEl && authorEl.value ? authorEl.value.trim() : '');
+    chrome.storage.local.get([PRINT_HISTORY_KEY, HISTORY_MODE_KEY], (r) => {
+      const modes = Array.isArray(r && r[HISTORY_MODE_KEY]) ? r[HISTORY_MODE_KEY] : HISTORY_MODE_DEFAULT;
+      const need = (kind === 'extract') ? 'extract' : 'print';
+      if (modes.indexOf(need) < 0) return;   // 该时机没勾选，不记
+      const meta = historyTextMeta(text);
+      const rec = {
+        ts: Date.now(),
+        kind: kind || '',
+        title,
+        author,
+        text,
+        hash: meta.hash,
+        len: meta.len,
+        summary: meta.summary,
+        // 记下当时那个网页，历史页重开预览时可以直接把页面打开再灌进去
+        url: (typeof location !== 'undefined' && location.href) ? location.href : '',
+        pageTitle: (typeof document !== 'undefined' && document.title) ? document.title : ''
+      };
       const list = Array.isArray(r && r[PRINT_HISTORY_KEY]) ? r[PRINT_HISTORY_KEY] : [];
-      list.unshift(rec);
+      // 去重：同一网页 + 同一正文 视为同一条，只更新时间并挪到最前（避免反复提取刷出一堆重复）
+      // 只比指纹（长度 + hash），长文也不用逐字对比；老记录没指纹时才退回全文比对
+      const urlKey = rec.url || '';
+      const existIdx = list.findIndex((it) => {
+        if (!it || (it.url || '') !== urlKey) return false;
+        if (typeof it.hash === 'number' && typeof it.len === 'number') {
+          return it.hash === meta.hash && it.len === meta.len;
+        }
+        return String(it.text || '').trim() === text.trim();
+      });
+      if (existIdx >= 0) {
+        const old = list[existIdx];
+        list.splice(existIdx, 1);
+        list.unshift({
+          ...old,
+          ts: rec.ts,
+          kind: rec.kind,
+          title: title || old.title || '',
+          author: author || old.author || '',
+          hash: rec.hash,
+          len: rec.len,
+          summary: old.summary || rec.summary || ''
+        });
+      } else {
+        list.unshift(rec);
+      }
       chrome.storage.local.set({ [PRINT_HISTORY_KEY]: list }, () => {
         const err = chrome.runtime.lastError;
         if (err) console.warn('[History] 保存历史记录失败:', err.message);

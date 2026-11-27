@@ -1,9 +1,13 @@
 // historypage.js —— 历史记录页：列出全部记录（搜索 / 在页面中打开 / 复制 / 删除 / 清空）
 const HISTORY_KEY = 'printHistory';
+const HISTORY_MODE_KEY = 'historyRecordMode';
+const HISTORY_MODE_DEFAULT = ['print'];
 
 const listEl = document.getElementById('list');
 const countEl = document.getElementById('count');
 const qEl = document.getElementById('q');
+const modePrintEl = document.getElementById('mode-print');
+const modeExtractEl = document.getElementById('mode-extract');
 const clearAllBtn = document.getElementById('clear-all');
 const toastEl = document.getElementById('toast');
 
@@ -24,12 +28,30 @@ function fmtTime(ts) {
 }
 
 function load() {
-  chrome.storage.local.get([HISTORY_KEY], (r) => {
+  chrome.storage.local.get([HISTORY_KEY, HISTORY_MODE_KEY], (r) => {
     const list = Array.isArray(r && r[HISTORY_KEY]) ? r[HISTORY_KEY] : [];
     allRecords = list;
+    const modes = Array.isArray(r && r[HISTORY_MODE_KEY]) ? r[HISTORY_MODE_KEY] : HISTORY_MODE_DEFAULT;
+    if (modePrintEl) modePrintEl.checked = modes.indexOf('print') >= 0;
+    if (modeExtractEl) modeExtractEl.checked = modes.indexOf('extract') >= 0;
     render();
   });
 }
+
+// 记录时机（打印/下载图片、提取）保存到 storage，content.js 每次写入前读它
+function saveModes() {
+  const modes = [];
+  if (modePrintEl && modePrintEl.checked) modes.push('print');
+  if (modeExtractEl && modeExtractEl.checked) modes.push('extract');
+  chrome.storage.local.set({ [HISTORY_MODE_KEY]: modes }, () => {
+    const err = chrome.runtime.lastError;
+    if (err) { showToast('保存失败：' + err.message); return; }
+    showToast(modes.length ? '记录时机已保存' : '两个时机都没勾：不再自动记录');
+  });
+}
+
+if (modePrintEl) modePrintEl.addEventListener('change', saveModes);
+if (modeExtractEl) modeExtractEl.addEventListener('change', saveModes);
 
 function save(list, cb) {
   chrome.storage.local.set({ [HISTORY_KEY]: list }, () => {
@@ -68,10 +90,11 @@ function render() {
   listEl.innerHTML = items.map(({ rec, i }) => {
     const title = String(rec.title || '').trim() || '无标题';
     const author = String(rec.author || '').trim();
-    const kind = rec.kind === 'download' ? '下载图片' : (rec.kind === 'print' ? '打印' : '');
+    const kind = rec.kind === 'download' ? '下载图片' : (rec.kind === 'print' ? '打印' : (rec.kind === 'extract' ? '提取' : ''));
     let host = '';
     try { host = rec.url ? new URL(rec.url).host : ''; } catch (e) { host = ''; }
-    const preview = String(rec.text || '').replace(/\s+/g, ' ').slice(0, 120);
+    const preview = String(rec.summary || String(rec.text || '').replace(/\s+/g, ' ').slice(0, 120));
+    const isLong = (typeof rec.len === 'number') ? rec.len > 120 : (String(rec.text || '').length > 120);
     return `<div class="item" data-index="${i}">
       <div class="top">
         <span class="title">${esc(title)}</span>
@@ -80,9 +103,9 @@ function render() {
         ${host ? `<span class="tag" title="${esc(rec.url)}">${esc(host)}</span>` : ''}
         <span class="time">${esc(fmtTime(rec.ts))}</span>
       </div>
-      <div class="preview">${esc(preview)}${String(rec.text || '').replace(/\s+/g, ' ').length > 120 ? '…' : ''}</div>
+      <div class="preview">${esc(preview)}${isLong ? '…' : ''}</div>
       <div class="ops">
-        <button class="primary act-open" data-index="${i}" title="打开这条记录保存时所在的网页，并把预览面板填好">在原网页中重开预览</button>
+        <button class="primary act-open" data-index="${i}" title="打开这条记录保存时所在的原网页，并把预览面板填好">重开预览</button>
         <button class="act-copy" data-index="${i}" title="复制标题、作者和正文全文">复制全文</button>
         <span class="spacer"></span>
         <button class="danger act-del" data-index="${i}">删除</button>
@@ -149,7 +172,7 @@ clearAllBtn.addEventListener('click', () => {
 
 // 别的窗口改了历史（比如又打印了一次），这边实时刷新
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes[HISTORY_KEY]) load();
+  if (area === 'local' && (changes[HISTORY_KEY] || changes[HISTORY_MODE_KEY])) load();
 });
 
 load();
