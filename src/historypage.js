@@ -97,7 +97,7 @@ function render() {
     const isLong = (typeof rec.len === 'number') ? rec.len > 120 : (String(rec.text || '').length > 120);
     return `<div class="item" data-index="${i}">
       <div class="top">
-        <span class="title">${esc(title)}</span>
+        <span class="title${rec.url ? ' has-url' : ''}" data-index="${i}"${rec.url ? ` title="在新标签页打开原网页：${esc(rec.url)}"` : ''}>${esc(title)}</span>
         ${author ? `<span class="author">${esc(author)}</span>` : ''}
         ${kind ? `<span class="tag">${esc(kind)}</span>` : ''}
         ${host ? `<span class="tag" title="${esc(rec.url)}">${esc(host)}</span>` : ''}
@@ -119,6 +119,14 @@ function getRecord(i) {
 }
 
 listEl.addEventListener('click', (ev) => {
+  // 点标题 = 在新标签页打开这条记录的原网页
+  const titleEl = ev.target.closest('.title.has-url');
+  if (titleEl) {
+    const rec = getRecord(titleEl.dataset.index);
+    if (rec && rec.url) chrome.tabs.create({ url: rec.url, active: true });
+    return;
+  }
+
   const btn = ev.target.closest('button');
   if (!btn) return;
   const i = Number(btn.dataset.index);
